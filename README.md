@@ -1,6 +1,6 @@
 # cetnos-tty
 
-Tencent Cloud Edge Computing 控制台菜单 — 纯 Go 静态二进制，运行在物理 tty1 上，无需登录直接按键配置网络、Ping、查看磁盘、重启/关机。
+Console menu for headless Linux appliances. Single static Go binary, runs directly on tty1 — no login needed, press keys to configure network, ping, list disks, reboot or power off.
 
 ## 功能
 
