@@ -1134,7 +1134,7 @@ func drawMenu() {
 	host, _ := os.Hostname()
 	sockets, model := cpuInfo()
 	kernel := readFileTrim("/proc/sys/kernel/osrelease")
-	fmt.Printf("================== %s ==================\n", rel)
+	fmt.Printf("========================== %s ==========================\n", rel)
 	fmt.Printf(" Hostname : %s\n", host)
 	fmt.Printf(" CPU      : %s x %s\n", sockets, model)
 	fmt.Printf(" Memory   : %s\n", mem)
