@@ -457,7 +457,7 @@ func isValidIPv4(s string) bool {
 }
 
 func staticConfig() {
-	fmt.Println("================= NETWORK CONFIG (static) =================")
+	fmt.Println("===================== NETWORK CONFIG (static) =====================")
 	nics := listNics()
 	if len(nics) == 0 {
 		fmt.Println("No network interface found.")
@@ -767,7 +767,7 @@ func dhcpConfig() {
 		pause()
 		return
 	}
-	fmt.Println("================= NETWORK CONFIG (dhcp) =================")
+	fmt.Println("===================== NETWORK CONFIG (dhcp) =====================")
 	fmt.Println("Interfaces:")
 	for i, n := range nics {
 		fmt.Printf("  %d. %-16s link=%s\n", i+1, n, nicOperstate(n))
@@ -806,9 +806,9 @@ func dhcpConfig() {
 // ---------- ping ----------
 
 func pingTest() {
-	fmt.Println("======================= PING TEST =======================")
+	fmt.Println("======================== PING TEST ========================")
 	runBg("ping", "-c", "4", "-W", "2", "223.6.6.6")
-	fmt.Println("=========================================================")
+	fmt.Println("==========================================================================")
 	if interrupt == 1 {
 		interrupt = 0
 		return
@@ -1018,11 +1018,11 @@ func showDisks() {
 		sysSet[d] = true
 	}
 	disks := dataDisks(sysSet)
-	fmt.Println("================= DATA DISKS (system disk excluded) =================")
+	fmt.Println("================ DATA DISKS (system disk excluded) ================")
 	fmt.Printf("  system disk(s): %s  (not listed below)\n", strings.Join(syslist, " "))
 	fmt.Println()
 	fmt.Printf("  %-9s %-8s %-5s %-5s %-22s %-18s %s\n", "DEV", "SIZE", "TYPE", "BUS", "MODEL", "SERIAL", "MOUNT")
-	fmt.Println("  ----------------------------------------------------------------------------------------")
+	fmt.Println("  ----------------------------------------------------------------------")
 	shown := 0
 	for _, dev := range disks {
 		shown++
@@ -1050,7 +1050,7 @@ func showDisks() {
 	if shown == 0 {
 		fmt.Println("  (no data disk found)")
 	}
-	fmt.Println("====================================================================")
+	fmt.Println("==========================================================================")
 	pause()
 }
 
@@ -1142,16 +1142,16 @@ func drawMenu() {
 	fmt.Printf(" Memory   : %s\n", mem)
 	fmt.Printf(" Kernel   : %-28s Boot : %s\n", kernel, boot)
 	fmt.Printf(" IPv4     : %s\n", ipStr)
-	fmt.Println("---------------------------------------------------------------------------")
+	fmt.Println("------------------------------------------------------------------------")
 	fmt.Println("  1. Configure network - static IP")
 	fmt.Println("  2. Configure network - DHCP")
 	fmt.Println("  3. Ping test")
 	fmt.Println("  4. Show data disks")
-	fmt.Println("  -------------------------------------------------------------------------")
+	fmt.Println("  ----------------------------------------------------------------------")
 	fmt.Println("  5. Reboot")
 	fmt.Println("  6. Power off")
 	fmt.Println("  7. Exit and enter the system")
-	fmt.Println("===========================================================================")
+	fmt.Println("==========================================================================")
 }
 
 // ---------- "666" launcher subcommand ----------
