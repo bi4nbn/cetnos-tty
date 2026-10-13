@@ -26,7 +26,7 @@ import (
 // ---------- globals ----------
 
 var (
-	rel        = "Tencent Cloud Edge Computing"
+	rel        = "cetnos-tty"
 	myTTY      string // e.g. tty1 / ttyS0
 	myGetty    string // e.g. getty@tty1.service / serial-getty@ttyS0.service
 	leaving    = 0
@@ -1193,9 +1193,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	rel = readFileTrim("/etc/tcec-release")
+	rel = readFileTrim("/etc/cetnos-release")
 	if rel == "" {
-		rel = "Tencent Cloud Edge Computing"
+		rel = "cetnos-tty"
 	}
 
 	// TERM fallback

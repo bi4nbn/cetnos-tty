@@ -38,7 +38,7 @@ chmod 750 /usr/local/bin/666
 # systemd 服务模板
 cat > /etc/systemd/system/cetnos-tty@.service <<'EOF'
 [Unit]
-Description=Tencent Cloud Edge Computing console (%I)
+Description=Console menu (%I)
 Conflicts=getty@%i.service
 
 [Service]
