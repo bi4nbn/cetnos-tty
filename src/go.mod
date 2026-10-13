@@ -1,3 +1,3 @@
-module tcec-console
+module cetnos-tty
 
 go 1.22

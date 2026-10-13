@@ -1,8 +1,8 @@
-// tcec-console: Go rewrite of the Tencent Cloud Edge Computing console menu.
+// cetnos-tty: console menu for headless Linux appliances.
 // Single static binary, no external deps, runs on CentOS 7.9 x86_64.
 //
-//   tcec-console          run the interactive menu (invoked by systemd on a tty)
-//   tcec-console start    equivalent to the old "666" wrapper: start the menu on the current tty
+//   cetnos-tty          run the interactive menu (invoked by systemd on a tty)
+//   cetnos-tty start    equivalent to the "666" wrapper: start the menu on the current tty
 package main
 
 import (
@@ -1164,17 +1164,17 @@ func startMenu() {
 	// falls back to tty1 with a warning.
 	realTTY := strings.HasPrefix(myTTY, "ttyS") || strings.HasPrefix(myTTY, "ttyAMA") ||
 		regexp.MustCompile(`^tty[0-9]`).MatchString(myTTY)
-	unit := "tcec-console@" + myTTY + ".service"
+	unit := "cetnos-tty@" + myTTY + ".service"
 	if !realTTY {
 		fmt.Fprintf(os.Stderr, "WARNING: 'tty' returned '%s' - not a serial/VT console.\n", myTTY)
 		fmt.Fprintln(os.Stderr, "         starting the console menu on tty1 (VGA) instead.")
-		unit = "tcec-console@tty1.service"
+		unit = "cetnos-tty@tty1.service"
 	}
 	c := exec.Command("systemctl", "start", unit)
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if err := c.Run(); err == nil {
-		fmt.Printf("console menu started on %s\n", strings.TrimSuffix(strings.TrimPrefix(unit, "tcec-console@"), ".service"))
+		fmt.Printf("console menu started on %s\n", strings.TrimSuffix(strings.TrimPrefix(unit, "cetnos-tty@"), ".service"))
 	}
 }
 
