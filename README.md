@@ -1,6 +1,6 @@
 # cetnos-tty
 
-cetnos-tty 控制台菜单 — 纯 Go 静态二进制，运行在物理 tty1 上，无需登录直接按键配置网络、Ping、查看磁盘、重启/关机。
+Tencent Cloud Edge Computing 控制台菜单 — 纯 Go 静态二进制，运行在物理 tty1 上，无需登录直接按键配置网络、Ping、查看磁盘、重启/关机。
 
 ## 功能
 
@@ -17,33 +17,33 @@ cetnos-tty 控制台菜单 — 纯 Go 静态二进制，运行在物理 tty1 上
 ## 编译
 
 ```bash
-CGO_ENABLED=0 go build -o tcec-console .
+CGO_ENABLED=0 go build -ldflags="-s -w" -o cetnos-tty .
 ```
 
-静态编译，无外部依赖，目标平台 CentOS 7+ x86_64。
+静态编译，无外部依赖，目标平台 CentOS 7+ x86_64，体积约 2.4MB。
 
 ## 部署
 
 ```bash
 # 二进制
-install -m 0700 tcec-console /usr/local/sbin/tcec-console
+install -m 0700 cetnos-tty /usr/local/sbin/cetnos-tty
 
 # 666 启动器
 cat > /usr/local/bin/666 <<'EOF'
 #!/bin/bash
-exec /usr/local/sbin/tcec-console start
+exec /usr/local/sbin/cetnos-tty start
 EOF
 chmod 750 /usr/local/bin/666
 
 # systemd 服务模板
-cat > /etc/systemd/system/tcec-console@.service <<'EOF'
+cat > /etc/systemd/system/cetnos-tty@.service <<'EOF'
 [Unit]
-Description=Tencent Cloud Edge Computing console setup menu (%I)
+Description=Tencent Cloud Edge Computing console (%I)
 Conflicts=getty@%i.service
 
 [Service]
 Type=idle
-ExecStart=/usr/local/sbin/tcec-console
+ExecStart=/usr/local/sbin/cetnos-tty
 StandardInput=tty
 StandardOutput=tty
 StandardError=tty
@@ -56,12 +56,12 @@ WantedBy=getty.target
 EOF
 
 # sysrq 关闭
-echo 'kernel.sysrq = 0' > /etc/sysctl.d/99-tcec-console.conf
+echo 'kernel.sysrq = 0' > /etc/sysctl.d/99-cetnos-tty.conf
 sysctl -w kernel.sysrq=0
 
 # 启用并启动
 systemctl daemon-reload
-systemctl enable --now tcec-console@tty1.service
+systemctl enable --now cetnos-tty@tty1.service
 ```
 
 ## 权限
