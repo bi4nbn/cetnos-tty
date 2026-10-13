@@ -1134,7 +1134,9 @@ func drawMenu() {
 	host, _ := os.Hostname()
 	sockets, model := cpuInfo()
 	kernel := readFileTrim("/proc/sys/kernel/osrelease")
-	fmt.Printf("========================== %s ==========================\n", rel)
+	// title bar: 75 columns, centered
+	titlePad := (75 - len(rel) - 2) / 2
+	fmt.Printf("%s %s %s\n", strings.Repeat("=", titlePad), rel, strings.Repeat("=", 75-titlePad-len(rel)-2))
 	fmt.Printf(" Hostname : %s\n", host)
 	fmt.Printf(" CPU      : %s x %s\n", sockets, model)
 	fmt.Printf(" Memory   : %s\n", mem)
