@@ -1,6 +1,6 @@
 # cetnos-tty
 
-Console menu for headless Linux appliances. Single static Go binary, runs directly on tty1 — no login needed, press keys to configure network, ping, list disks, reboot or power off.
+无头 Linux 设备控制台菜单。单文件 Go 静态二进制，直接跑在 tty1 上，无需登录，按键即可配网、Ping、查看磁盘、重启或关机。
 
 ## 功能
 
