@@ -26,7 +26,7 @@ import (
 // ---------- globals ----------
 
 var (
-	rel        = "cetnos-tty"
+	rel        = "SSCLOUD CentOS7-TTY"
 	myTTY      string // e.g. tty1 / ttyS0
 	myGetty    string // e.g. getty@tty1.service / serial-getty@ttyS0.service
 	leaving    = 0
@@ -1195,7 +1195,7 @@ func main() {
 
 	rel = readFileTrim("/etc/cetnos-release")
 	if rel == "" {
-		rel = "cetnos-tty"
+		rel = "SSCLOUD CentOS7-TTY"
 	}
 
 	// TERM fallback
