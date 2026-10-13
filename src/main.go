@@ -144,7 +144,6 @@ func initSignals() {
 				interrupt = 1 // flag only; NEVER exit in the handler body
 			} else if s == syscall.SIGTERM {
 				leaving = 1
-				restoreGetty()
 				os.Exit(143)
 			}
 		}
@@ -235,8 +234,6 @@ func ask(prompt string) (string, bool) {
 			return "", false
 		}
 		if interrupt == 1 {
-			interrupt = 0
-			fmt.Print("\033[2J\033[H\n")
 			return "", true
 		}
 		n, err := os.Stdin.Read(readBuf)
@@ -259,6 +256,10 @@ func ask(prompt string) (string, bool) {
 		case '\n', '\r':
 			fmt.Println()
 			return string(buf), false
+		case 0x03, 0x1b: // Ctrl+C or ESC
+			fmt.Println()
+			interrupt = 1
+			return "", true
 		case 0x7f, 0x08: // ^? and ^H
 			if len(buf) > 0 {
 				buf = buf[:len(buf)-1]
@@ -1018,8 +1019,7 @@ func showDisks() {
 		sysSet[d] = true
 	}
 	disks := dataDisks(sysSet)
-	fmt.Println("================ DATA DISKS (system disk excluded) ================")
-	fmt.Printf("  system disk(s): %s  (not listed below)\n", strings.Join(syslist, " "))
+	fmt.Println("========================= DATA DISKS =========================")
 	fmt.Println()
 	fmt.Printf("  %-9s %-8s %-5s %-5s %-22s %-18s %s\n", "DEV", "SIZE", "TYPE", "BUS", "MODEL", "SERIAL", "MOUNT")
 	fmt.Println("  ----------------------------------------------------------------------")
@@ -1145,8 +1145,8 @@ func drawMenu() {
 	fmt.Println("------------------------------------------------------------------------")
 	fmt.Println("  1. Configure network - static IP")
 	fmt.Println("  2. Configure network - DHCP")
-	fmt.Println("  3. Ping test")
-	fmt.Println("  4. Show data disks")
+	fmt.Println("  3. Show data disks")
+	fmt.Println("  4. Ping test")
 	fmt.Println("  ----------------------------------------------------------------------")
 	fmt.Println("  5. Reboot")
 	fmt.Println("  6. Power off")
@@ -1183,6 +1183,9 @@ func startMenu() {
 // ---------- main ----------
 
 func main() {
+	// clear screen on startup
+	fmt.Print("\033[2J\033[H")
+
 	if len(os.Args) > 1 && os.Args[1] == "start" {
 		startMenu()
 		return
@@ -1225,6 +1228,8 @@ func main() {
 		stdinIsTty = true
 	}
 
+	detectTTY()
+
 	// cbreak mode: turn off ICANON (char-by-char) and ECHO (ask() does its own echo)
 	// Also set VMIN=0, VTIME=2: Read() returns after 200ms even with no data.
 	if stdinIsTty {
@@ -1242,16 +1247,14 @@ func main() {
 	// disable sysrq
 	os.WriteFile("/proc/sys/kernel/sysrq", []byte("0"), 0644)
 
-	detectTTY()
 	initSignals()
 	migrateIfcfgBackups()
 
-	// defer restore terminal + getty on exit
+	// defer restore terminal on exit
 	defer func() {
 		if stdinIsTty && origTermios != nil {
 			tcSet(int(os.Stdin.Fd()), origTermios)
 		}
-		restoreGetty()
 	}()
 
 	for {
@@ -1262,6 +1265,7 @@ func main() {
 			return
 		}
 		if intr {
+			interrupt = 0
 			continue
 		}
 		choice = strings.TrimSpace(choice)
@@ -1276,9 +1280,9 @@ func main() {
 		case "2":
 			dhcpConfig()
 		case "3":
-			pingTest()
-		case "4":
 			showDisks()
+		case "4":
+			pingTest()
 		case "5":
 			if confirm("Reboot now?") {
 				fmt.Println("Rebooting ...")
@@ -1295,12 +1299,20 @@ func main() {
 			}
 		case "7":
 			leaving = 1
-			fmt.Printf("Starting a normal login prompt on %s ...\n", myTTY)
-			restoreGetty()
-			time.Sleep(1 * time.Second)
-			return
+			// restore terminal to normal mode
+			if stdinIsTty && origTermios != nil {
+				tcSet(int(os.Stdin.Fd()), origTermios)
+			}
+			// start getty service - Conflicts will auto-stop cetnos-tty
+			exec.Command("systemctl", "start", "getty@tty1.service").Run()
+			os.Exit(0)
 		default:
 			// empty / invalid: loop redraws
+		}
+		// clear any leftover interrupt flag from sub-functions
+		if interrupt == 1 {
+			interrupt = 0
+			continue
 		}
 	}
 }
