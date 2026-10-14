@@ -1518,14 +1518,14 @@ func drawMenu() {
 	fmt.Printf(" Kernel    : %-28s Boot : %s\n", kernel, boot)
 	fmt.Printf(" IPv4      : %s\n", ipStr)
 	fmt.Println(strings.Repeat("-", w))
-	fmt.Println("  1.  静态 IP 配置")
-	fmt.Println("  2.  DHCP 自动获取")
-	fmt.Println("  3.  数据盘列表")
-	fmt.Println("  4.  Ping 测试")
+	fmt.Println("  1.  Configure network - static IP")
+	fmt.Println("  2.  Configure network - DHCP")
+	fmt.Println("  3.  Show data disks")
+	fmt.Println("  4.  Ping test")
 	fmt.Println(strings.Repeat("-", w))
-	fmt.Println("  5.  重启")
-	fmt.Println("  6.  关机")
-	fmt.Println("  7.  进入系统")
+	fmt.Println("  5.  Reboot")
+	fmt.Println("  6.  Power off")
+	fmt.Println("  7.  Exit and enter the system")
 	fmt.Println(strings.Repeat("=", w))
 }
 
@@ -1605,7 +1605,7 @@ func main() {
 
 	for {
 		drawMenu()
-		choice, intr := ask(" 请选择 [1-7]: ")
+		choice, intr := ask(" Select [1-7]: ")
 		if eofFlag {
 			leaving = 1
 			return
