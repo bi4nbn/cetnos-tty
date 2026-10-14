@@ -946,7 +946,9 @@ func diskInfo(dev string) (bus, model, serial string) {
 }
 
 // allDisks enumerates real whole disks from /sys/block.
-// Only devices with a /device symlink (physical backing) are included.
+// Only devices with a /device symlink (physical backing) are included,
+// and partitions are skipped: a whole disk has no /sys/block/<dev>/partition
+// attribute file, while partitions (sda1, nvme0n1p1, ...) do.
 func allDisks() []string {
 	entries, err := os.ReadDir("/sys/block/")
 	if err != nil {
@@ -959,6 +961,11 @@ func allDisks() []string {
 			strings.HasPrefix(name, "ram") || strings.HasPrefix(name, "zram") ||
 			strings.HasPrefix(name, "dm-") || strings.HasPrefix(name, "md") ||
 			strings.HasPrefix(name, "nbd") {
+			continue
+		}
+		// skip partitions (e.g. sda1, nvme0n1p1): they carry a "partition"
+		// attribute file; whole disks do not.
+		if _, err := os.Stat("/sys/block/" + name + "/partition"); err == nil {
 			continue
 		}
 		if _, err := os.Stat("/sys/block/" + name + "/device"); err != nil {
