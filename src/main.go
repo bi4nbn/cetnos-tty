@@ -1507,20 +1507,23 @@ func drawMenu() {
 	sockets, model := cpuInfo()
 	kernel := readFileTrim("/proc/sys/kernel/osrelease")
 
-	const w = 68
+	const w = 66
 	tp := (w - len(rel) - 2) / 2
 	fmt.Printf("%s %s %s\n", strings.Repeat("═", tp), rel, strings.Repeat("═", w-tp-len(rel)-2))
-	// two-column info: left 34 chars, right 34 chars
-	fmt.Printf(" Hostname : %-30s Kernel  : %s\n", host, kernel)
-	fmt.Printf(" CPU      : %-30s Boot    : %s\n", sockets+" x "+model, boot)
-	fmt.Printf(" Memory   : %-30s IPv4    : %s\n", mem, ipStr)
-	fmt.Println(strings.Repeat("─", w))
-	// menu: 2 columns
-	fmt.Printf("  1. %-28s  2. %s\n", "Static IP", "DHCP")
-	fmt.Printf("  3. %-28s  4. %s\n", "Data disks", "Ping test")
-	fmt.Printf("  5. %-28s  6. %s\n", "Reboot", "Power off")
-	fmt.Printf("  7. %s\n", "Enter system")
-	fmt.Println(strings.Repeat("─", w))
+	fmt.Printf(" Hostname   %s\n", host)
+	fmt.Printf(" CPU        %s x %s\n", sockets, model)
+	fmt.Printf(" Memory     %s\n", mem)
+	fmt.Printf(" Kernel     %-26s  Boot  %s\n", kernel, boot)
+	fmt.Printf(" IPv4       %s\n", ipStr)
+	fmt.Println(" " + strings.Repeat("─", w))
+	fmt.Printf("   1   %s\n", "Configure network - static IP")
+	fmt.Printf("   2   %s\n", "Configure network - DHCP")
+	fmt.Printf("   3   %s\n", "Show data disks")
+	fmt.Printf("   4   %s\n", "Ping test")
+	fmt.Printf("   5   %s\n", "Reboot")
+	fmt.Printf("   6   %s\n", "Power off")
+	fmt.Printf("   7   %s\n", "Exit and enter the system")
+	fmt.Println(" " + strings.Repeat("─", w))
 }
 
 // ---------- main ----------
@@ -1599,7 +1602,7 @@ func main() {
 
 	for {
 		drawMenu()
-		choice, intr := ask(" Select [1-7]: ")
+		choice, intr := ask(" > ")
 		if eofFlag {
 			leaving = 1
 			return
