@@ -1043,9 +1043,38 @@ func showDisks() {
 	fmt.Println()
 	fmt.Printf("  %-9s %-8s %-5s %-5s %-22s %-18s %s\n", "DEV", "SIZE", "TYPE", "BUS", "MODEL", "SERIAL", "MOUNT")
 	fmt.Println("  ----------------------------------------------------------------------")
-	shown := 0
+
+	// Dedup by serial: the same physical SSD may appear as multiple block
+	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
+	// nvme0c0n1). Keep the shortest, most standard device name.
+	deduped := []string{}
+	chosen := map[string]string{} // serial -> chosen device name
 	for _, dev := range disks {
-		shown++
+		_, _, serial := diskInfo(dev)
+		key := strings.TrimSpace(serial)
+		if key == "" {
+			deduped = append(deduped, dev)
+			continue
+		}
+		if prev, ok := chosen[key]; ok {
+			if len(dev) < len(prev) {
+				// replace the previously chosen name with the shorter one
+				for i, d := range deduped {
+					if d == prev {
+						deduped[i] = dev
+						break
+					}
+				}
+				chosen[key] = dev
+			}
+			continue
+		}
+		chosen[key] = dev
+		deduped = append(deduped, dev)
+	}
+
+	shown := 0
+	for _, dev := range deduped {
 		size := diskSizeHuman(dev)
 		dt := diskType(dev)
 		bus, model, serial := diskInfo(dev)
@@ -1056,8 +1085,9 @@ func showDisks() {
 		if len(serial) > 18 {
 			serial = serial[:18]
 		}
+		shown++
 		fmt.Printf("  %-9s %-8s %-5s %-5s %-22s %-18s %s\n", dev, size, dt, bus, model, serial, mnt)
-		if shown%10 == 0 && shown < len(disks) {
+		if shown%10 == 0 && shown < len(deduped) {
 			a, intr := ask("  -- more -- Press Enter for next page (q+Enter to stop): ")
 			if intr {
 				return
