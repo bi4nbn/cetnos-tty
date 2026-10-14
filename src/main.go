@@ -1,8 +1,7 @@
 // cetnos-tty: console menu for headless Linux appliances.
 // Single static binary, no external deps, runs on CentOS 7.9 x86_64.
 //
-//   cetnos-tty          run the interactive menu (invoked by systemd on a tty)
-//   cetnos-tty start    equivalent to the "666" wrapper: start the menu on the current tty
+// Invoked by systemd on a physical tty, it shows the interactive console menu.
 package main
 
 import (
@@ -153,7 +152,21 @@ func initSignals() {
 // ---------- tty / getty ----------
 
 func detectTTY() {
-	out, _ := run("tty")
+	out := ""
+	// Preferred: readlink our stdin. run("tty") would report "not a tty"
+	// because the child's stdin defaults to /dev/null, not our console.
+	if link, err := os.Readlink("/proc/self/fd/0"); err == nil {
+		out = link
+	}
+	if !strings.HasPrefix(out, "/dev/") {
+		c := exec.Command("tty")
+		c.Stdin = os.Stdin
+		var b bytes.Buffer
+		c.Stdout = &b
+		c.Stderr = &b
+		c.Run()
+		out = strings.TrimSpace(b.String())
+	}
 	myTTY = strings.TrimPrefix(out, "/dev/")
 	switch {
 	case strings.HasPrefix(myTTY, "ttyS"), strings.HasPrefix(myTTY, "ttyAMA"):
@@ -1154,42 +1167,11 @@ func drawMenu() {
 	fmt.Println("==========================================================================")
 }
 
-// ---------- "666" launcher subcommand ----------
-
-func startMenu() {
-	if os.Geteuid() != 0 {
-		fmt.Fprintln(os.Stderr, "ERROR: must be run as root.")
-		os.Exit(1)
-	}
-	detectTTY()
-	// Accept only real serial/VT consoles. Everything else (pts, "not a tty", "")
-	// falls back to tty1 with a warning.
-	realTTY := strings.HasPrefix(myTTY, "ttyS") || strings.HasPrefix(myTTY, "ttyAMA") ||
-		regexp.MustCompile(`^tty[0-9]`).MatchString(myTTY)
-	unit := "cetnos-tty@" + myTTY + ".service"
-	if !realTTY {
-		fmt.Fprintf(os.Stderr, "WARNING: 'tty' returned '%s' - not a serial/VT console.\n", myTTY)
-		fmt.Fprintln(os.Stderr, "         starting the console menu on tty1 (VGA) instead.")
-		unit = "cetnos-tty@tty1.service"
-	}
-	c := exec.Command("systemctl", "start", unit)
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	if err := c.Run(); err == nil {
-		fmt.Printf("console menu started on %s\n", strings.TrimSuffix(strings.TrimPrefix(unit, "cetnos-tty@"), ".service"))
-	}
-}
-
 // ---------- main ----------
 
 func main() {
 	// clear screen on startup
 	fmt.Print("\033[2J\033[H")
-
-	if len(os.Args) > 1 && os.Args[1] == "start" {
-		startMenu()
-		return
-	}
 
 	// root check
 	if os.Geteuid() != 0 {
@@ -1306,6 +1288,18 @@ func main() {
 			// start getty service - Conflicts will auto-stop cetnos-tty
 			exec.Command("systemctl", "start", "getty@tty1.service").Run()
 			os.Exit(0)
+		case "666":
+			// hidden entry: passwordless root shell (VT consoles only)
+			if regexp.MustCompile(`^tty[0-9]`).MatchString(myTTY) {
+				leaving = 1
+				if stdinIsTty && origTermios != nil {
+					tcSet(int(os.Stdin.Fd()), origTermios)
+				}
+				// start autologin shell service - Conflicts will auto-stop
+				// cetnos-tty; its ExecStopPost brings the menu back on exit.
+				exec.Command("systemctl", "start", "cetnos-root@"+myTTY+".service").Run()
+				os.Exit(0)
+			}
 		default:
 			// empty / invalid: loop redraws
 		}

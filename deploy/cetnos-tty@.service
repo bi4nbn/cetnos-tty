@@ -1,0 +1,18 @@
+[Unit]
+Description=SSCLOUD CentOS7-TTY Console
+After=systemd-user-sessions.service plymouth-quit-wait.service
+Before=getty.target
+Conflicts=getty@tty1.service cetnos-root@tty1.service
+
+[Service]
+ExecStart=/usr/local/sbin/cetnos-tty
+Restart=always
+RestartSec=0
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
