@@ -26,7 +26,7 @@ import (
 // ---------- globals ----------
 
 var (
-	rel        = "SSCLOUD Linux-TTY"
+	rel        = "SSCLOUD Linux-TTY Console"
 	myTTY      string // e.g. tty1 / ttyS0
 	myGetty    string // e.g. getty@tty1.service / serial-getty@ttyS0.service
 	leaving    = 0
@@ -1465,24 +1465,27 @@ func drawMenu() {
 	fmt.Print("\033[2J\033[H")
 	ipOut, _ := run("ip", "-4", "-o", "addr", "show", "scope", "global")
 	var ips []string
+	seenNic := map[string]bool{}
 	for _, line := range strings.Split(ipOut, "\n") {
 		f := strings.Fields(line)
 		if len(f) >= 4 {
-			ips = append(ips, f[1]+"("+f[3]+")")
+			// f[1] = nic name, f[3] = ip/cidr
+			if !seenNic[f[1]] {
+				seenNic[f[1]] = true
+				ips = append(ips, f[1]+" ("+f[3]+")")
+			}
 		}
 	}
-	ipStr := strings.Join(ips, " ")
+	ipStr := strings.Join(ips, "  ")
 	if ipStr == "" {
-		ipStr = "(no IPv4 address yet)"
+		ipStr = "(无 IPv4 地址)"
 	}
 	mem := "unknown"
-	// Read /proc/meminfo directly (locale-independent, works on all distros).
 	if memData, err := os.ReadFile("/proc/meminfo"); err == nil {
 		for _, line := range strings.Split(string(memData), "\n") {
 			if strings.HasPrefix(line, "MemTotal:") {
 				fields := strings.Fields(line)
 				if len(fields) >= 2 {
-					// fields[1] is kB; convert to human-readable.
 					if kb, err := strconv.Atoi(fields[1]); err == nil {
 						if kb >= 1024*1024 {
 							mem = fmt.Sprintf("%.1fG", float64(kb)/(1024*1024))
@@ -1504,24 +1507,26 @@ func drawMenu() {
 	host, _ := os.Hostname()
 	sockets, model := cpuInfo()
 	kernel := readFileTrim("/proc/sys/kernel/osrelease")
-	// title bar: 75 columns, centered
-	titlePad := (75 - len(rel) - 2) / 2
-	fmt.Printf("%s %s %s\n", strings.Repeat("=", titlePad), rel, strings.Repeat("=", 75-titlePad-len(rel)-2))
-	fmt.Printf(" Hostname : %s\n", host)
-	fmt.Printf(" CPU      : %s x %s\n", sockets, model)
-	fmt.Printf(" Memory   : %s\n", mem)
-	fmt.Printf(" Kernel   : %-28s Boot : %s\n", kernel, boot)
-	fmt.Printf(" IPv4     : %s\n", ipStr)
-	fmt.Println("------------------------------------------------------------------------")
-	fmt.Println("  1. Configure network - static IP")
-	fmt.Println("  2. Configure network - DHCP")
-	fmt.Println("  3. Show data disks")
-	fmt.Println("  4. Ping test")
-	fmt.Println("  ----------------------------------------------------------------------")
-	fmt.Println("  5. Reboot")
-	fmt.Println("  6. Power off")
-	fmt.Println("  7. Exit and enter the system")
-	fmt.Println("==========================================================================")
+
+	const w = 70 // total width
+	// title bar centered
+	tp := (w - len(rel) - 2) / 2
+	fmt.Printf("%s %s %s\n", strings.Repeat("=", tp), rel, strings.Repeat("=", w-tp-len(rel)-2))
+	fmt.Printf(" Hostname  : %s\n", host)
+	fmt.Printf(" CPU       : %s x %s\n", sockets, model)
+	fmt.Printf(" Memory    : %s\n", mem)
+	fmt.Printf(" Kernel    : %-28s Boot : %s\n", kernel, boot)
+	fmt.Printf(" IPv4      : %s\n", ipStr)
+	fmt.Println(strings.Repeat("-", w))
+	fmt.Println("  1.  静态 IP 配置")
+	fmt.Println("  2.  DHCP 自动获取")
+	fmt.Println("  3.  数据盘列表")
+	fmt.Println("  4.  Ping 测试")
+	fmt.Println(strings.Repeat("-", w))
+	fmt.Println("  5.  重启")
+	fmt.Println("  6.  关机")
+	fmt.Println("  7.  进入系统")
+	fmt.Println(strings.Repeat("=", w))
 }
 
 // ---------- main ----------
@@ -1541,7 +1546,7 @@ func main() {
 
 	rel = readFileTrim("/etc/linux-tty-release")
 	if rel == "" {
-		rel = "SSCLOUD Linux-TTY"
+		rel = "SSCLOUD Linux-TTY Console"
 	}
 
 	// TERM fallback
@@ -1600,7 +1605,7 @@ func main() {
 
 	for {
 		drawMenu()
-		choice, intr := ask("Select [1-7]: ")
+		choice, intr := ask(" 请选择 [1-7]: ")
 		if eofFlag {
 			leaving = 1
 			return
