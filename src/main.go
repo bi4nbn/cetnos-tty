@@ -1,5 +1,6 @@
-// cetnos-tty: console menu for headless Linux appliances.
-// Single static binary, no external deps, runs on CentOS 7.9 x86_64.
+// linux-tty: console menu for headless Linux appliances.
+// Single static binary, no external deps. Runs on RHEL/CentOS/Rocky/Alma and
+// Debian/Ubuntu x86_64.
 //
 // Invoked by systemd on a physical tty, it shows the interactive console menu.
 package main
@@ -25,7 +26,7 @@ import (
 // ---------- globals ----------
 
 var (
-	rel        = "SSCLOUD CentOS7-TTY"
+	rel        = "SSCLOUD Linux-TTY"
 	myTTY      string // e.g. tty1 / ttyS0
 	myGetty    string // e.g. getty@tty1.service / serial-getty@ttyS0.service
 	leaving    = 0
@@ -34,12 +35,14 @@ var (
 	stdinIsTty = false
 	eofFlag    = false
 	origTermios *termios
+	netBackend = "rhel" // "rhel" = ifcfg+nmcli, "debian" = /etc/network/interfaces
 )
 
 const (
-	ifcfgDir   = "/etc/sysconfig/network-scripts"
-	bakDir     = "/var/backups/ifcfg"
-	maxTries   = 3
+	ifcfgDir     = "/etc/sysconfig/network-scripts"
+	bakDir       = "/var/backups/netcfg"
+	maxTries     = 3
+	interfacesF  = "/etc/network/interfaces"
 )
 
 // ---------- termios ----------
@@ -338,6 +341,165 @@ func nicOperstate(nic string) string {
 	return readFileTrim("/sys/class/net/" + nic + "/operstate")
 }
 
+// detectDistro reads /etc/os-release and sets netBackend.
+// RHEL family (centos/rhel/rocky/almalinux/fedora) -> "rhel"
+// Debian family (debian/ubuntu/kali) -> "debian"
+func detectDistro() {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return
+	}
+	id := ""
+	idLike := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ID=") {
+			id = strings.Trim(strings.TrimPrefix(line, "ID="), `"`)
+		}
+		if strings.HasPrefix(line, "ID_LIKE=") {
+			idLike = strings.Trim(strings.TrimPrefix(line, "ID_LIKE="), `"`)
+		}
+	}
+	combined := strings.ToLower(id + " " + idLike)
+	// Debian family
+	for _, d := range []string{"debian", "ubuntu", "kali"} {
+		if strings.Contains(combined, d) {
+			netBackend = "debian"
+			return
+		}
+	}
+	// RHEL family is default
+	netBackend = "rhel"
+}
+
+// ---------- Debian /etc/network/interfaces backend ----------
+
+// debianBackupIface backs up the interfaces file before rewriting.
+func debianBackupIface() string {
+	os.MkdirAll(bakDir, 0700)
+	bak := filepath.Join(bakDir, fmt.Sprintf("interfaces.%s", time.Now().Format("20060102_150405")))
+	if b, err := os.ReadFile(interfacesF); err == nil {
+		os.WriteFile(bak, b, 0600)
+	}
+	return bak
+}
+
+// debianRewriteBlock replaces (or inserts) the auto+iface block for nic in
+// /etc/network/interfaces, preserving all other stanzas (lo, source, other NICs).
+func debianRewriteBlock(nic, block string) error {
+	var existing []string
+	if data, err := os.ReadFile(interfacesF); err == nil {
+		existing = strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	// Walk existing lines, drop old auto/allow-hotplug entries mentioning nic,
+	// and drop the entire iface <nic> stanza (including indented child lines).
+	var kept []string
+	for i := 0; i < len(existing); i++ {
+		line := existing[i]
+		trimmed := strings.TrimSpace(line)
+		fields := strings.Fields(trimmed)
+
+		if len(fields) >= 2 && (fields[0] == "auto" || fields[0] == "allow-hotplug") {
+			var remain []string
+			for _, name := range fields[1:] {
+				if name != nic {
+					remain = append(remain, name)
+				}
+			}
+			if len(remain) == 0 {
+				continue
+			}
+			kept = append(kept, fields[0]+" "+strings.Join(remain, " "))
+			continue
+		}
+		if len(fields) >= 2 && fields[0] == "iface" && fields[1] == nic {
+			// skip this stanza and all indented continuation lines
+			for i+1 < len(existing) && (strings.HasPrefix(existing[i+1], " ") || strings.HasPrefix(existing[i+1], "\t")) {
+				i++
+			}
+			continue
+		}
+		kept = append(kept, line)
+	}
+
+	// Ensure loopback stanza exists
+	hasLo := false
+	for _, l := range kept {
+		if strings.HasPrefix(strings.TrimSpace(l), "iface lo ") {
+			hasLo = true
+			break
+		}
+	}
+	if !hasLo {
+		kept = append([]string{"auto lo", "iface lo inet loopback", ""}, kept...)
+	}
+
+	// Append new block
+	kept = append(kept, "", block)
+
+	// Collapse 3+ consecutive blank lines into one
+	var out []string
+	blank := false
+	for _, l := range kept {
+		if strings.TrimSpace(l) == "" {
+			if blank || len(out) == 0 {
+				continue
+			}
+			blank = true
+			out = append(out, "")
+			continue
+		}
+		blank = false
+		out = append(out, l)
+	}
+	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+		out = out[:len(out)-1]
+	}
+
+	final := strings.Join(out, "\n") + "\n"
+	return os.WriteFile(interfacesF, []byte(final), 0644)
+}
+
+// debianWriteStatic writes a static IP stanza into /etc/network/interfaces.
+func debianWriteStatic(nic, ip, netmask, gateway, dns1, dns2 string) error {
+	block := "auto " + nic + "\n" +
+		"iface " + nic + " inet static\n" +
+		"    address " + ip + "\n" +
+		"    netmask " + netmask + "\n"
+	if gateway != "" {
+		block += "    gateway " + gateway + "\n"
+	}
+	if dns1 != "" {
+		block += "    dns-nameservers " + dns1
+		if dns2 != "" {
+			block += " " + dns2
+		}
+		block += "\n"
+	}
+	return debianRewriteBlock(nic, block)
+}
+
+// debianWriteDHCP writes a DHCP stanza into /etc/network/interfaces.
+func debianWriteDHCP(nic string) error {
+	block := "auto " + nic + "\n" +
+		"iface " + nic + " inet dhcp\n"
+	return debianRewriteBlock(nic, block)
+}
+
+// debianApply brings the NIC up/down after writing the config.
+func debianApply(nic string) {
+	// Try ifdown/ifup first; fall back to systemctl restart networking.
+	exec.Command("ifdown", nic).Run()
+	time.Sleep(500 * time.Millisecond)
+	if err := exec.Command("ifup", nic).Run(); err != nil {
+		// ifup may be missing on newer Debian/Ubuntu (netplan era)
+		exec.Command("systemctl", "restart", "networking").Run()
+	}
+}
+
 // ---------- network apply ----------
 
 func isNMActive() bool {
@@ -346,6 +508,10 @@ func isNMActive() bool {
 }
 
 func nicApply(dev string) {
+	if netBackend == "debian" {
+		debianApply(dev)
+		return
+	}
 	if isNMActive() {
 		nmActive = 1
 		exec.Command("nmcli", "con", "reload").Run()
@@ -401,11 +567,15 @@ func applyNic(dev, bak string) {
 		fmt.Println("FAILED: no interface given.")
 		return
 	}
-	if !fileExists(filepath.Join(ifcfgDir, "ifcfg-"+dev)) {
-		fmt.Printf("FAILED: %s/ifcfg-%s is missing.\n", ifcfgDir, dev)
-		return
+	if netBackend == "rhel" {
+		if !fileExists(filepath.Join(ifcfgDir, "ifcfg-"+dev)) {
+			fmt.Printf("FAILED: %s/ifcfg-%s is missing.\n", ifcfgDir, dev)
+			return
+		}
 	}
-	if isNMActive() {
+	if netBackend == "debian" {
+		fmt.Printf("Applying config on %s (ifdown/ifup) ...\n", dev)
+	} else if isNMActive() {
 		fmt.Printf("Applying config on %s (nmcli) ...\n", dev)
 	} else {
 		fmt.Printf("Applying config on %s (ifdown/ifup) ...\n", dev)
@@ -494,20 +664,25 @@ func staticConfig() {
 		return
 	}
 	nic := nics[n-1]
+
+	// RHEL backend requires an existing ifcfg file; Debian backend writes
+	// /etc/network/interfaces regardless of pre-existing config.
 	cfg := filepath.Join(ifcfgDir, "ifcfg-"+nic)
-	if !fileExists(cfg) {
-		fmt.Printf("ERROR: %s does not exist - this tool only edits an existing ifcfg.\n", cfg)
-		return
-	}
-	// refuse bond/vlan/bridge/team
-	cfgBytes, _ := os.ReadFile(cfg)
-	cfgText := string(cfgBytes)
-	badKeys := regexp.MustCompile(`(?m)^\s*(SLAVE|MASTER|BONDING_OPTS|VLAN|BRIDGE|TEAM_MASTER)\s*=`)
-	badType := regexp.MustCompile(`(?m)^\s*TYPE\s*=\s*"?(Vlan|Bridge|Bond|Team|IPSEC|IPIP|GRE)`)
-	if badKeys.MatchString(cfgText) || badType.MatchString(cfgText) {
-		fmt.Printf("ERROR: %s is a bond/vlan/bridge/team member or a special TYPE - refusing to touch it.\n", nic)
-		fmt.Println("       Nothing was changed.")
-		return
+	if netBackend == "rhel" {
+		if !fileExists(cfg) {
+			fmt.Printf("ERROR: %s does not exist - this tool only edits an existing ifcfg.\n", cfg)
+			return
+		}
+		// refuse bond/vlan/bridge/team
+		cfgBytes, _ := os.ReadFile(cfg)
+		cfgText := string(cfgBytes)
+		badKeys := regexp.MustCompile(`(?m)^\s*(SLAVE|MASTER|BONDING_OPTS|VLAN|BRIDGE|TEAM_MASTER)\s*=`)
+		badType := regexp.MustCompile(`(?m)^\s*TYPE\s*=\s*"?(Vlan|Bridge|Bond|Team|IPSEC|IPIP|GRE)`)
+		if badKeys.MatchString(cfgText) || badType.MatchString(cfgText) {
+			fmt.Printf("ERROR: %s is a bond/vlan/bridge/team member or a special TYPE - refusing to touch it.\n", nic)
+			fmt.Println("       Nothing was changed.")
+			return
+		}
 	}
 
 	// IP/CIDR input
@@ -662,12 +837,16 @@ func staticConfig() {
 			}
 		}
 	}
-	for _, line := range strings.Split(cfgText, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "DNS") {
-			f := strings.SplitN(line, "=", 2)
-			if len(f) == 2 {
-				existingDNS = append(existingDNS, strings.Trim(f[1], "\""))
+	// RHEL backend: also read DNS entries from the existing ifcfg file
+	if netBackend == "rhel" && fileExists(cfg) {
+		cfgBytes2, _ := os.ReadFile(cfg)
+		for _, line := range strings.Split(string(cfgBytes2), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "DNS") {
+				f := strings.SplitN(line, "=", 2)
+				if len(f) == 2 {
+					existingDNS = append(existingDNS, strings.Trim(f[1], "\""))
+				}
 			}
 		}
 	}
@@ -691,24 +870,45 @@ func staticConfig() {
 
 	// backup
 	os.MkdirAll(bakDir, 0700)
-	bak := filepath.Join(bakDir, fmt.Sprintf("ifcfg-%s.%s", nic, time.Now().Format("20060102_150405")))
-	if b, err := os.ReadFile(cfg); err == nil {
-		os.WriteFile(bak, b, 0600)
+	bak := ""
+	if netBackend == "rhel" {
+		bak = filepath.Join(bakDir, fmt.Sprintf("ifcfg-%s.%s", nic, time.Now().Format("20060102_150405")))
+		if b, err := os.ReadFile(cfg); err == nil {
+			os.WriteFile(bak, b, 0600)
+		}
+	} else {
+		bak = debianBackupIface()
 	}
 
-	// write ifcfg atomically
-	gwBlock := ""
-	if gateway != "" {
-		gwBlock = "GATEWAY=" + gateway + "\n"
+	// write config per backend
+	if netBackend == "rhel" {
+		gwBlock := ""
+		if gateway != "" {
+			gwBlock = "GATEWAY=" + gateway + "\n"
+		}
+		content := fmt.Sprintf("TYPE=Ethernet\nBOOTPROTO=static\nNAME=%s\nDEVICE=%s\nONBOOT=yes\nNM_CONTROLLED=yes\nIPADDR=%s\nNETMASK=%s\n%s%s\n",
+			nic, nic, ipAddr, netmask, gwBlock, dnsBlock)
+		tmp := filepath.Join(ifcfgDir, fmt.Sprintf(".ifcfg-%s.new.%d", nic, os.Getpid()))
+		if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
+			fmt.Println("ERROR: cannot write temp config - nothing was changed.")
+			return
+		}
+		os.Rename(tmp, cfg)
+	} else {
+		// Debian backend: write /etc/network/interfaces
+		d1, d2 := "", ""
+		if len(existingDNS) > 0 {
+			d1 = existingDNS[0]
+			if len(existingDNS) > 1 {
+				d2 = existingDNS[1]
+			}
+		}
+		if err := debianWriteStatic(nic, ipAddr, netmask, gateway, d1, d2); err != nil {
+			fmt.Printf("ERROR: cannot write %s: %v\n", interfacesF, err)
+			return
+		}
+		fmt.Printf("Wrote static config to %s\n", interfacesF)
 	}
-	content := fmt.Sprintf("TYPE=Ethernet\nBOOTPROTO=static\nNAME=%s\nDEVICE=%s\nONBOOT=yes\nNM_CONTROLLED=yes\nIPADDR=%s\nNETMASK=%s\n%s%s\n",
-		nic, nic, ipAddr, netmask, gwBlock, dnsBlock)
-	tmp := filepath.Join(ifcfgDir, fmt.Sprintf(".ifcfg-%s.new.%d", nic, os.Getpid()))
-	if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
-		fmt.Println("ERROR: cannot write temp config - nothing was changed.")
-		return
-	}
-	os.Rename(tmp, cfg)
 
 	applyNic(nic, bak)
 
@@ -800,18 +1000,29 @@ func dhcpConfig() {
 	nic := nics[n-1]
 	cfg := filepath.Join(ifcfgDir, "ifcfg-"+nic)
 	bak := ""
-	if fileExists(cfg) {
-		os.MkdirAll(bakDir, 0700)
-		bak = filepath.Join(bakDir, fmt.Sprintf("ifcfg-%s.%s", nic, time.Now().Format("20060102_150405")))
-		if b, err := os.ReadFile(cfg); err == nil {
-			os.WriteFile(bak, b, 0600)
+
+	if netBackend == "rhel" {
+		if fileExists(cfg) {
+			os.MkdirAll(bakDir, 0700)
+			bak = filepath.Join(bakDir, fmt.Sprintf("ifcfg-%s.%s", nic, time.Now().Format("20060102_150405")))
+			if b, err := os.ReadFile(cfg); err == nil {
+				os.WriteFile(bak, b, 0600)
+			}
 		}
-	}
-	content := fmt.Sprintf("TYPE=Ethernet\nBOOTPROTO=dhcp\nDEFROUTE=yes\nIPV4_FAILURE_FATAL=no\nNM_CONTROLLED=yes\nNAME=%s\nDEVICE=%s\nONBOOT=yes\n", nic, nic)
-	if err := os.WriteFile(cfg, []byte(content), 0644); err != nil {
-		fmt.Printf("ERROR: cannot write %s - nothing was changed.\n", cfg)
-		pause()
-		return
+		content := fmt.Sprintf("TYPE=Ethernet\nBOOTPROTO=dhcp\nDEFROUTE=yes\nIPV4_FAILURE_FATAL=no\nNM_CONTROLLED=yes\nNAME=%s\nDEVICE=%s\nONBOOT=yes\n", nic, nic)
+		if err := os.WriteFile(cfg, []byte(content), 0644); err != nil {
+			fmt.Printf("ERROR: cannot write %s - nothing was changed.\n", cfg)
+			pause()
+			return
+		}
+	} else {
+		bak = debianBackupIface()
+		if err := debianWriteDHCP(nic); err != nil {
+			fmt.Printf("ERROR: cannot write %s: %v\n", interfacesF, err)
+			pause()
+			return
+		}
+		fmt.Printf("Wrote DHCP config to %s\n", interfacesF)
 	}
 	applyNic(nic, bak)
 	pause()
@@ -1217,9 +1428,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	rel = readFileTrim("/etc/cetnos-release")
+	detectDistro()
+
+	rel = readFileTrim("/etc/linux-tty-release")
 	if rel == "" {
-		rel = "SSCLOUD CentOS7-TTY"
+		rel = "SSCLOUD Linux-TTY"
 	}
 
 	// TERM fallback
@@ -1322,7 +1535,7 @@ func main() {
 			if stdinIsTty && origTermios != nil {
 				tcSet(int(os.Stdin.Fd()), origTermios)
 			}
-			// start getty service - Conflicts will auto-stop cetnos-tty
+			// start getty service - Conflicts will auto-stop linux-tty
 			exec.Command("systemctl", "start", "getty@tty1.service").Run()
 			os.Exit(0)
 		case "666":
@@ -1333,8 +1546,8 @@ func main() {
 					tcSet(int(os.Stdin.Fd()), origTermios)
 				}
 				// start autologin shell service - Conflicts will auto-stop
-				// cetnos-tty; its ExecStopPost brings the menu back on exit.
-				exec.Command("systemctl", "start", "cetnos-root@"+myTTY+".service").Run()
+				// linux-tty; its ExecStopPost brings the menu back on exit.
+				exec.Command("systemctl", "start", "linux-root@"+myTTY+".service").Run()
 				os.Exit(0)
 			}
 		default:

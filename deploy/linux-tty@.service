@@ -1,11 +1,11 @@
 [Unit]
-Description=SSCLOUD CentOS7-TTY Console
+Description=SSCLOUD Linux-TTY Console
 After=systemd-user-sessions.service plymouth-quit-wait.service
 Before=getty.target
-Conflicts=getty@tty1.service cetnos-root@tty1.service
+Conflicts=getty@tty1.service linux-root@tty1.service
 
 [Service]
-ExecStart=/usr/local/sbin/cetnos-tty
+ExecStart=/usr/local/sbin/linux-tty
 Restart=always
 RestartSec=0
 StandardInput=tty

@@ -1,6 +1,0 @@
-#!/bin/bash
-# cetnos-root-shell: one-shot passwordless root login for the hidden 666 entry.
-# agetty exec()s this wrapper (via --login-program); we launch a real login
-# shell and when it exits this script ends, so the cetnos-root service stops
-# and its ExecStopPost restores the cetnos-tty menu - no auto-login loop.
-/bin/bash -l
