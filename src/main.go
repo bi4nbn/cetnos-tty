@@ -1475,15 +1475,26 @@ func drawMenu() {
 	if ipStr == "" {
 		ipStr = "(no IPv4 address yet)"
 	}
-	memOut, _ := run("free", "-h")
 	mem := "unknown"
-	for _, line := range strings.Split(memOut, "\n") {
-		if strings.HasPrefix(line, "Mem:") {
-			f := strings.Fields(line)
-			if len(f) >= 2 {
-				mem = f[1]
+	// Read /proc/meminfo directly (locale-independent, works on all distros).
+	if memData, err := os.ReadFile("/proc/meminfo"); err == nil {
+		for _, line := range strings.Split(string(memData), "\n") {
+			if strings.HasPrefix(line, "MemTotal:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					// fields[1] is kB; convert to human-readable.
+					if kb, err := strconv.Atoi(fields[1]); err == nil {
+						if kb >= 1024*1024 {
+							mem = fmt.Sprintf("%.1fG", float64(kb)/(1024*1024))
+						} else if kb >= 1024 {
+							mem = fmt.Sprintf("%.0fM", float64(kb)/1024)
+						} else {
+							mem = fmt.Sprintf("%dK", kb)
+						}
+					}
+				}
+				break
 			}
-			break
 		}
 	}
 	boot := "Legacy-BIOS"
