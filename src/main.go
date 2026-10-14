@@ -1469,7 +1469,6 @@ func drawMenu() {
 	for _, line := range strings.Split(ipOut, "\n") {
 		f := strings.Fields(line)
 		if len(f) >= 4 {
-			// f[1] = nic name, f[3] = ip/cidr
 			if !seenNic[f[1]] {
 				seenNic[f[1]] = true
 				ips = append(ips, f[1]+" ("+f[3]+")")
@@ -1478,7 +1477,7 @@ func drawMenu() {
 	}
 	ipStr := strings.Join(ips, "  ")
 	if ipStr == "" {
-		ipStr = "(无 IPv4 地址)"
+		ipStr = "(no IPv4)"
 	}
 	mem := "unknown"
 	if memData, err := os.ReadFile("/proc/meminfo"); err == nil {
@@ -1508,25 +1507,20 @@ func drawMenu() {
 	sockets, model := cpuInfo()
 	kernel := readFileTrim("/proc/sys/kernel/osrelease")
 
-	const w = 70 // total width
-	// title bar centered
+	const w = 68
 	tp := (w - len(rel) - 2) / 2
-	fmt.Printf("%s %s %s\n", strings.Repeat("=", tp), rel, strings.Repeat("=", w-tp-len(rel)-2))
-	fmt.Printf(" Hostname  : %s\n", host)
-	fmt.Printf(" CPU       : %s x %s\n", sockets, model)
-	fmt.Printf(" Memory    : %s\n", mem)
-	fmt.Printf(" Kernel    : %-28s Boot : %s\n", kernel, boot)
-	fmt.Printf(" IPv4      : %s\n", ipStr)
-	fmt.Println(strings.Repeat("-", w))
-	fmt.Println("  1.  Configure network - static IP")
-	fmt.Println("  2.  Configure network - DHCP")
-	fmt.Println("  3.  Show data disks")
-	fmt.Println("  4.  Ping test")
-	fmt.Println(strings.Repeat("-", w))
-	fmt.Println("  5.  Reboot")
-	fmt.Println("  6.  Power off")
-	fmt.Println("  7.  Exit and enter the system")
-	fmt.Println(strings.Repeat("=", w))
+	fmt.Printf("%s %s %s\n", strings.Repeat("═", tp), rel, strings.Repeat("═", w-tp-len(rel)-2))
+	// two-column info: left 34 chars, right 34 chars
+	fmt.Printf(" Hostname : %-30s Kernel  : %s\n", host, kernel)
+	fmt.Printf(" CPU      : %-30s Boot    : %s\n", sockets+" x "+model, boot)
+	fmt.Printf(" Memory   : %-30s IPv4    : %s\n", mem, ipStr)
+	fmt.Println(strings.Repeat("─", w))
+	// menu: 2 columns
+	fmt.Printf("  1. %-28s  2. %s\n", "Static IP", "DHCP")
+	fmt.Printf("  3. %-28s  4. %s\n", "Data disks", "Ping test")
+	fmt.Printf("  5. %-28s  6. %s\n", "Reboot", "Power off")
+	fmt.Printf("  7. %s\n", "Enter system")
+	fmt.Println(strings.Repeat("─", w))
 }
 
 // ---------- main ----------
