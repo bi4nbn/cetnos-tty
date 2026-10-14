@@ -364,6 +364,16 @@ func detectDistro() {
 	// Debian family
 	for _, d := range []string{"debian", "ubuntu", "kali"} {
 		if strings.Contains(combined, d) {
+			// Debian family: pick netplan if /etc/netplan has yaml files,
+			// otherwise fall back to traditional /etc/network/interfaces.
+			if entries, err := os.ReadDir("/etc/netplan"); err == nil {
+				for _, e := range entries {
+					if strings.HasSuffix(e.Name(), ".yaml") || strings.HasSuffix(e.Name(), ".yml") {
+						netBackend = "netplan"
+						return
+					}
+				}
+			}
 			netBackend = "debian"
 			return
 		}
@@ -500,6 +510,63 @@ func debianApply(nic string) {
 	}
 }
 
+// netplanConfigPath is where we write our own netplan YAML.
+const netplanConfigPath = "/etc/netplan/99-linux-tty.yaml"
+
+// netplanBackup backs up existing netplan config before writing ours.
+func netplanBackup() string {
+	os.MkdirAll(bakDir, 0700)
+	bak := filepath.Join(bakDir, fmt.Sprintf("netplan.%s", time.Now().Format("20060102_150405")))
+	if entries, err := os.ReadDir("/etc/netplan"); err == nil {
+		var merged strings.Builder
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join("/etc/netplan", e.Name()))
+			if err != nil {
+				continue
+			}
+			merged.WriteString(fmt.Sprintf("# === %s ===\n", e.Name()))
+			merged.Write(data)
+			merged.WriteString("\n")
+		}
+		os.WriteFile(bak, []byte(merged.String()), 0600)
+	}
+	return bak
+}
+
+// netplanWriteStatic writes a static IP netplan YAML and applies it.
+func netplanWriteStatic(nic, ip, netmask, gateway, dns1, dns2 string) error {
+	ones, _ := maskSize(net.ParseIP(netmask).To4())
+	prefix := strconv.Itoa(ones)
+	yaml := "network:\n  version: 2\n  ethernets:\n    " + nic + ":\n" +
+		"      addresses: [" + ip + "/" + prefix + "]\n"
+	if gateway != "" {
+		yaml += "      routes:\n        - to: 0.0.0.0/0\n          via: " + gateway + "\n"
+	}
+	if dns1 != "" {
+		dnsList := dns1
+		if dns2 != "" {
+			dnsList += ", " + dns2
+		}
+		yaml += "      nameservers:\n        addresses: [" + dnsList + "]\n"
+	}
+	return os.WriteFile(netplanConfigPath, []byte(yaml), 0600)
+}
+
+// netplanWriteDHCP writes a DHCP netplan YAML and applies it.
+func netplanWriteDHCP(nic string) error {
+	yaml := "network:\n  version: 2\n  ethernets:\n    " + nic + ":\n" +
+		"      dhcp4: true\n"
+	return os.WriteFile(netplanConfigPath, []byte(yaml), 0600)
+}
+
+// netplanApply runs `netplan apply`.
+func netplanApply(nic string) {
+	exec.Command("netplan", "apply").Run()
+}
+
 // ---------- network apply ----------
 
 func isNMActive() bool {
@@ -508,8 +575,12 @@ func isNMActive() bool {
 }
 
 func nicApply(dev string) {
-	if netBackend == "debian" {
+	switch netBackend {
+	case "debian":
 		debianApply(dev)
+		return
+	case "netplan":
+		netplanApply(dev)
 		return
 	}
 	if isNMActive() {
@@ -575,6 +646,8 @@ func applyNic(dev, bak string) {
 	}
 	if netBackend == "debian" {
 		fmt.Printf("Applying config on %s (ifdown/ifup) ...\n", dev)
+	} else if netBackend == "netplan" {
+		fmt.Printf("Applying config on %s (netplan apply) ...\n", dev)
 	} else if isNMActive() {
 		fmt.Printf("Applying config on %s (nmcli) ...\n", dev)
 	} else {
@@ -871,17 +944,21 @@ func staticConfig() {
 	// backup
 	os.MkdirAll(bakDir, 0700)
 	bak := ""
-	if netBackend == "rhel" {
+	switch netBackend {
+	case "rhel":
 		bak = filepath.Join(bakDir, fmt.Sprintf("ifcfg-%s.%s", nic, time.Now().Format("20060102_150405")))
 		if b, err := os.ReadFile(cfg); err == nil {
 			os.WriteFile(bak, b, 0600)
 		}
-	} else {
+	case "debian":
 		bak = debianBackupIface()
+	case "netplan":
+		bak = netplanBackup()
 	}
 
 	// write config per backend
-	if netBackend == "rhel" {
+	switch netBackend {
+	case "rhel":
 		gwBlock := ""
 		if gateway != "" {
 			gwBlock = "GATEWAY=" + gateway + "\n"
@@ -894,8 +971,7 @@ func staticConfig() {
 			return
 		}
 		os.Rename(tmp, cfg)
-	} else {
-		// Debian backend: write /etc/network/interfaces
+	case "debian":
 		d1, d2 := "", ""
 		if len(existingDNS) > 0 {
 			d1 = existingDNS[0]
@@ -908,6 +984,19 @@ func staticConfig() {
 			return
 		}
 		fmt.Printf("Wrote static config to %s\n", interfacesF)
+	case "netplan":
+		d1, d2 := "", ""
+		if len(existingDNS) > 0 {
+			d1 = existingDNS[0]
+			if len(existingDNS) > 1 {
+				d2 = existingDNS[1]
+			}
+		}
+		if err := netplanWriteStatic(nic, ipAddr, netmask, gateway, d1, d2); err != nil {
+			fmt.Printf("ERROR: cannot write %s: %v\n", netplanConfigPath, err)
+			return
+		}
+		fmt.Printf("Wrote static config to %s\n", netplanConfigPath)
 	}
 
 	applyNic(nic, bak)
@@ -1001,7 +1090,8 @@ func dhcpConfig() {
 	cfg := filepath.Join(ifcfgDir, "ifcfg-"+nic)
 	bak := ""
 
-	if netBackend == "rhel" {
+	switch netBackend {
+	case "rhel":
 		if fileExists(cfg) {
 			os.MkdirAll(bakDir, 0700)
 			bak = filepath.Join(bakDir, fmt.Sprintf("ifcfg-%s.%s", nic, time.Now().Format("20060102_150405")))
@@ -1015,7 +1105,7 @@ func dhcpConfig() {
 			pause()
 			return
 		}
-	} else {
+	case "debian":
 		bak = debianBackupIface()
 		if err := debianWriteDHCP(nic); err != nil {
 			fmt.Printf("ERROR: cannot write %s: %v\n", interfacesF, err)
@@ -1023,6 +1113,14 @@ func dhcpConfig() {
 			return
 		}
 		fmt.Printf("Wrote DHCP config to %s\n", interfacesF)
+	case "netplan":
+		bak = netplanBackup()
+		if err := netplanWriteDHCP(nic); err != nil {
+			fmt.Printf("ERROR: cannot write %s: %v\n", netplanConfigPath, err)
+			pause()
+			return
+		}
+		fmt.Printf("Wrote DHCP config to %s\n", netplanConfigPath)
 	}
 	applyNic(nic, bak)
 	pause()
