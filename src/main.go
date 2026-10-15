@@ -1447,10 +1447,10 @@ type percDiskInfo struct {
 	Med    string // SSD / HDD
 }
 
-var percCache map[int]percDiskInfo
+var percCache map[int][]percDiskInfo
 var percOnce sync.Once
 
-func diskPercMapCache() (map[int]percDiskInfo, bool) {
+func diskPercMapCache() (map[int][]percDiskInfo, bool) {
 	percOnce.Do(func() {
 		m, err := diskPercMap()
 		if err == nil && len(m) > 0 {
@@ -1481,7 +1481,7 @@ func percToolPath() string {
 	return ""
 }
 
-func diskPercMap() (map[int]percDiskInfo, error) {
+func diskPercMap() (map[int][]percDiskInfo, error) {
 	tool := percToolPath()
 	if tool == "" {
 		return nil, fmt.Errorf("no perccli/storcli found")
@@ -1490,16 +1490,16 @@ func diskPercMap() (map[int]percDiskInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := map[int]percDiskInfo{}
+	res := map[int][]percDiskInfo{}
 	var curDG, curSlot, curDID int = -1, -1, -1
 	var curSerial, curModel, curIntf, curMed string
 	flush := func() {
 		if curSlot >= 0 && curDID >= 0 {
 			info := percDiskInfo{Slot: curSlot, DID: curDID, DG: curDG, Serial: curSerial, Model: curModel, Intf: curIntf, Med: curMed}
 			if curDG >= 0 {
-				res[curDG] = info
+				res[curDG] = append(res[curDG], info)
 			}
-			res[-curDID-1] = info
+			res[-curDID-1] = append(res[-curDID-1], info)
 		}
 	}
 	// Table row: "32:0      0 Onln   1 5.457 TB SATA HDD N   N  512B ST6000NM0115-1YZ110"
@@ -1576,7 +1576,7 @@ func showDisks() {
 	}
 	fmt.Println("========================== DISKS ===========================")
 	fmt.Println()
-	fmt.Printf("  %-12s %-6s %-8s %-16s %-3s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
+	fmt.Printf("  %-12s %-6s %-8s %-16s %-12s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
 	fmt.Println("  ------------------------------------------------------------")
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
@@ -1623,39 +1623,38 @@ func showDisks() {
 		}
 		dt := diskType(dev)
 		_, model, serial := diskInfo(dev)
+		slot := "-"
 		// For sdX behind perccli, override udevadm controller info with
 		// physical disk info. RAID mode: sysfs target == DG. Passthrough:
 		// sysfs target == DID (stored as negative key -DID-1).
 		if t := sysfsTarget(dev); t >= 0 && strings.HasPrefix(dev, "sd") {
 			if pm, ok := diskPercMapCache(); ok {
-				info, found := pm[t]
+				disks, found := pm[t]
 				if !found {
-					info, found = pm[-t-1]
+					disks, found = pm[-t-1]
 				}
-				if found {
-					if info.Serial != "" {
-						serial = info.Serial
+				if found && len(disks) > 0 {
+					first := disks[0]
+					if first.Serial != "" {
+						serial = first.Serial
 					}
-					if info.Model != "" {
-						model = info.Model
+					if first.Model != "" {
+						model = first.Model
 					}
-					if info.Intf != "" && info.Med != "" {
-						dt = info.Intf + "-" + info.Med
+					if first.Intf != "" && first.Med != "" {
+						dt = first.Intf + "-" + first.Med
 					}
+					// Build slot string: "00" or "00,01" or "00,01,02"
+					parts := []string{}
+					for _, d := range disks {
+						parts = append(parts, fmt.Sprintf("%02d", d.Slot))
+					}
+					slot = strings.Join(parts, ",")
 				}
 			}
 		}
-		slot := "-"
-		if t := sysfsTarget(dev); t >= 0 {
-			if pm, ok := diskPercMapCache(); ok {
-				if info, found := pm[t]; found {
-					slot = fmt.Sprintf("%02d", info.Slot)
-				} else if info, found := pm[-t-1]; found {
-					slot = fmt.Sprintf("%02d", info.Slot)
-				} else {
-					slot = fmt.Sprintf("%02d", t)
-				}
-			} else {
+		if slot == "-" {
+			if t := sysfsTarget(dev); t >= 0 {
 				slot = fmt.Sprintf("%02d", t)
 			}
 		}
@@ -1666,7 +1665,7 @@ func showDisks() {
 			serial = serial[:30]
 		}
 		shown++
-		fmt.Printf("  %-12s %-6s %-8s %-16s %-3s %s\n", display, size, dt, model, slot, serial)
+		fmt.Printf("  %-12s %-6s %-8s %-16s %-12s %s\n", display, size, dt, model, slot, serial)
 		if shown%20 == 0 && shown < len(deduped) {
 			a, intr := ask("  -- more -- Press Enter for next page (q+Enter to stop): ")
 			if intr {
