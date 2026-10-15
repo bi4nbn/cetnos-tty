@@ -80,6 +80,7 @@ echo "[4/6] installing root-shell ..."
 cat > "$SHELL_PATH" <<'SH'
 #!/bin/bash
 /bin/bash -l
+exec /usr/local/sbin/linux-tty
 SH
 chmod 700 "$SHELL_PATH"
 

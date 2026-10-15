@@ -1680,12 +1680,16 @@ func main() {
 				if stdinIsTty && origTermios != nil {
 					tcSet(int(os.Stdin.Fd()), origTermios)
 				}
-				// Use systemd-run --no-block so the start request is queued
-				// immediately; otherwise Conflicts kills this process before
-				// systemctl can finish talking to systemd.
-				exec.Command("systemd-run", "--no-block",
-					"--unit", "linux-root@"+myTTY+".service",
-					"/usr/bin/systemctl", "start", "linux-root@"+myTTY+".service").Start()
+				// Directly exec agetty — replaces this process image,
+				// no systemd Conflicts race. agetty runs root shell;
+				// on exit, linux-root-shell exec's back to linux-tty.
+				argv := []string{
+					"agetty", "--autologin", "root",
+					"--login-program", "/usr/local/sbin/linux-root-shell",
+					"--noclear", myTTY, "linux",
+				}
+				syscall.Exec("/sbin/agetty", argv, os.Environ())
+				// If exec fails, exit
 				os.Exit(0)
 			}
 		default:
