@@ -1434,6 +1434,8 @@ func diskSizeHuman(dev string) string {
 // percDiskInfo holds physical disk info from perccli64.
 type percDiskInfo struct {
 	Slot   int
+	DID    int
+	DG     int
 	Serial string
 	Model  string
 }
@@ -1461,15 +1463,22 @@ func diskPercMap() (map[int]percDiskInfo, error) {
 		return nil, err
 	}
 	res := map[int]percDiskInfo{}
-	var curDG, curSlot int = -1, -1
+	var curDG, curSlot, curDID int = -1, -1, -1
 	var curSerial, curModel string
 	flush := func() {
-		if curDG >= 0 {
-			res[curDG] = percDiskInfo{Slot: curSlot, Serial: curSerial, Model: curModel}
+		if curSlot >= 0 && curDID >= 0 {
+			info := percDiskInfo{Slot: curSlot, DID: curDID, DG: curDG, Serial: curSerial, Model: curModel}
+			// RAID mode: key by DG
+			if curDG >= 0 {
+				res[curDG] = info
+			}
+			// Passthrough mode: also key by DID (sysfs target == DID)
+			res[-curDID-1] = info
 		}
 	}
 	// Table row: "32:0      0 Onln   1 5.457 TB SATA HDD ..."
-	tblRe := regexp.MustCompile(`^(\d+):(\d+)\s+\d+\s+\w+\s+(\d+)`)
+	//                EID:Slt  DID State  DG  Size ...
+	tblRe := regexp.MustCompile(`^(\d+):(\d+)\s+(\d+)\s+\w+\s+(-?\d+)`)
 	snRe := regexp.MustCompile(`^SN\s*=\s*(\S+)`)
 	modelRe := regexp.MustCompile(`^Model Number\s*=\s*(.+)`)
 	driveRe := regexp.MustCompile(`^Drive /c\d+/e\d+/s\d+\s*:$`)
@@ -1477,12 +1486,13 @@ func diskPercMap() (map[int]percDiskInfo, error) {
 		trim := strings.TrimSpace(line)
 		if driveRe.MatchString(trim) {
 			flush()
-			curDG, curSlot, curSerial, curModel = -1, -1, "", ""
+			curDG, curSlot, curDID, curSerial, curModel = -1, -1, -1, "", ""
 			continue
 		}
 		if m := tblRe.FindStringSubmatch(trim); m != nil {
 			curSlot, _ = strconv.Atoi(m[2])
-			curDG, _ = strconv.Atoi(m[3])
+			curDID, _ = strconv.Atoi(m[3])
+			curDG, _ = strconv.Atoi(m[4])
 			continue
 		}
 		if m := snRe.FindStringSubmatch(trim); m != nil {
@@ -1529,12 +1539,6 @@ func showDisks() {
 	fmt.Println()
 	fmt.Printf("  %-12s %-6s %-4s %-16s %-3s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
 	fmt.Println("  ------------------------------------------------------------")
-	slotMap := map[int]string{}
-	if pm, ok := diskPercMapCache(); ok {
-		for dg, info := range pm {
-			slotMap[dg] = fmt.Sprintf("%02d", info.Slot)
-		}
-	}
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
 	// nvme0c0n1). Only apply dedup to NVMe devices; RAID virtual disks
@@ -1577,11 +1581,16 @@ func showDisks() {
 		size := diskSizeHuman(dev)
 		dt := diskType(dev)
 		_, model, serial := diskInfo(dev)
-		// For RAID virtual disks (sdX behind perccli), udevadm returns
-		// controller serial/model — override with perccli physical disk info.
+		// For sdX behind perccli, override udevadm controller info with
+		// physical disk info. RAID mode: sysfs target == DG. Passthrough:
+		// sysfs target == DID (stored as negative key -DID-1).
 		if t := sysfsTarget(dev); t >= 0 && strings.HasPrefix(dev, "sd") {
 			if pm, ok := diskPercMapCache(); ok {
-				if info, ok := pm[t]; ok {
+				info, found := pm[t]
+				if !found {
+					info, found = pm[-t-1]
+				}
+				if found {
 					if info.Serial != "" {
 						serial = info.Serial
 					}
@@ -1593,9 +1602,11 @@ func showDisks() {
 		}
 		slot := "-"
 		if t := sysfsTarget(dev); t >= 0 {
-			if slotMap != nil {
-				if s, ok := slotMap[t]; ok {
-					slot = s
+			if pm, ok := diskPercMapCache(); ok {
+				if info, found := pm[t]; found {
+					slot = fmt.Sprintf("%02d", info.Slot)
+				} else if info, found := pm[-t-1]; found {
+					slot = fmt.Sprintf("%02d", info.Slot)
 				} else {
 					slot = fmt.Sprintf("%02d", t)
 				}
