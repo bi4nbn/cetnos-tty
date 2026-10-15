@@ -1,6 +1,6 @@
 #!/bin/bash
-# login-exit: agetty --login-program for menu option 7.
-# agetty passes username as $1. /bin/login verifies password and starts
-# the shell; when shell exits, exec back to linux-tty menu.
-/bin/login "$1"
+# login-exit: normal login, then return to linux-tty menu on logout.
+# Reset terminal to sane state before login.
+stty sane 2>/dev/null
+/bin/login
 exec /usr/local/sbin/linux-tty
