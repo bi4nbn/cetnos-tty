@@ -43,6 +43,7 @@ const (
 	bakDir       = "/var/backups/netcfg"
 	maxTries     = 3
 	interfacesF  = "/etc/network/interfaces"
+	version      = "v1.0.0"
 )
 
 // ---------- termios ----------
@@ -1537,6 +1538,7 @@ func drawMenu() {
 	fmt.Printf(" CPU      : %s x %s\n", sockets, model)
 	fmt.Printf(" Memory   : %s\n", mem)
 	fmt.Printf(" Kernel   : %-26s Boot : %s\n", kernel, boot)
+	fmt.Printf(" Version  : %s\n", version)
 	fmt.Printf(" IP       : %s\n", ipStr)
 	fmt.Println(strings.Repeat("-", w))
 	fmt.Println("  1. Configure network - static IP")
