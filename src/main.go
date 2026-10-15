@@ -1212,6 +1212,10 @@ func systemDisks() []string {
 				name = filepath.Base(link)
 			}
 		}
+		// Must be a real block device; /dev/root is a fake path from initramfs.
+		if _, err := os.Stat("/sys/class/block/" + name); err != nil {
+			return
+		}
 		for _, phys := range resolveToPhysicalDisks(name) {
 			if phys != "" {
 				disks[phys] = true
@@ -1345,18 +1349,6 @@ func allDisks() []string {
 	return res
 }
 
-func allDisksTagged(sysSet map[string]bool) []string {
-	var res []string
-	for _, d := range allDisks() {
-		name := d
-		if sysSet[d] {
-			name = d + " [SYS]"
-		}
-		res = append(res, name)
-	}
-	return res
-}
-
 // diskSizeHuman reads /sys/block/<dev>/size (512-byte sectors) and formats.
 func diskSizeHuman(dev string) string {
 	sectorsStr := readFileTrim("/sys/block/" + dev + "/size")
@@ -1384,7 +1376,7 @@ func showDisks() {
 	}
 	fmt.Println("========================== DISKS ===========================")
 	fmt.Println()
-	fmt.Printf("  %-12s %-8s %-5s %-5s %-22s %s\n", "DEV", "SIZE", "TYPE", "BUS", "MODEL", "SERIAL")
+	fmt.Printf("  %-14s %-8s %-5s %-5s %-22s %s\n", "DEV", "SIZE", "TYPE", "BUS", "MODEL", "SERIAL")
 	fmt.Println("  --------------------------------------------------------------")
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
@@ -1435,7 +1427,7 @@ func showDisks() {
 			serial = serial[:18]
 		}
 		shown++
-		fmt.Printf("  %-12s %-8s %-5s %-5s %-22s %s\n", display, size, dt, bus, model, serial)
+		fmt.Printf("  %-14s %-8s %-5s %-5s %-22s %s\n", display, size, dt, bus, model, serial)
 		if shown%10 == 0 && shown < len(deduped) {
 			a, intr := ask("  -- more -- Press Enter for next page (q+Enter to stop): ")
 			if intr {
