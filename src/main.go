@@ -1491,8 +1491,8 @@ func drawMenu() {
 		}
 		seen[key] = true
 		if f[2] == "inet6" {
-			// IPv6: just the address, no nic prefix
-			ips = append(ips, ip)
+			// IPv6: extra space before for visual separation
+			ips = append(ips, "  "+ip)
 		} else {
 			// IPv4: nic + address
 			ips = append(ips, nic+" "+ip)
