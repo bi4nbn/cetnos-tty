@@ -1345,13 +1345,14 @@ func allDisks() []string {
 	return res
 }
 
-func dataDisks(syslist map[string]bool) []string {
+func allDisksTagged(sysSet map[string]bool) []string {
 	var res []string
 	for _, d := range allDisks() {
-		if syslist[d] {
-			continue
+		name := d
+		if sysSet[d] {
+			name = d + " [SYS]"
 		}
-		res = append(res, d)
+		res = append(res, name)
 	}
 	return res
 }
@@ -1378,21 +1379,21 @@ func showDisks() {
 		sysSet[d] = true
 	}
 	if len(syslist) == 0 {
-		fmt.Println("WARNING: unable to identify system disk (/) - the list below")
-		fmt.Println("         may include the disk hosting the OS.")
+		fmt.Println("WARNING: unable to identify system disk (/) - list below may")
+		fmt.Println("         include the disk hosting the OS.")
 	}
-	disks := dataDisks(sysSet)
-	fmt.Println("========================= DATA DISKS =========================")
+	fmt.Println("========================== DISKS ===========================")
 	fmt.Println()
-	fmt.Printf("  %-9s %-8s %-5s %-5s %-22s %s\n", "DEV", "SIZE", "TYPE", "BUS", "MODEL", "SERIAL")
+	fmt.Printf("  %-12s %-8s %-5s %-5s %-22s %s\n", "DEV", "SIZE", "TYPE", "BUS", "MODEL", "SERIAL")
 	fmt.Println("  --------------------------------------------------------------")
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
 	// nvme0c0n1). Only apply dedup to NVMe devices; RAID virtual disks
 	// (sdb, sdc, ...) share the controller serial but are distinct volumes.
+	all := allDisks()
 	deduped := []string{}
 	chosen := map[string]string{} // serial -> chosen device name
-	for _, dev := range disks {
+	for _, dev := range all {
 		if !strings.HasPrefix(dev, "nvme") {
 			deduped = append(deduped, dev)
 			continue
@@ -1420,6 +1421,10 @@ func showDisks() {
 	}
 	shown := 0
 	for _, dev := range deduped {
+		display := dev
+		if sysSet[dev] {
+			display = dev + " [SYS]"
+		}
 		size := diskSizeHuman(dev)
 		dt := diskType(dev)
 		bus, model, serial := diskInfo(dev)
@@ -1430,7 +1435,7 @@ func showDisks() {
 			serial = serial[:18]
 		}
 		shown++
-		fmt.Printf("  %-9s %-8s %-5s %-5s %-22s %s\n", dev, size, dt, bus, model, serial)
+		fmt.Printf("  %-12s %-8s %-5s %-5s %-22s %s\n", display, size, dt, bus, model, serial)
 		if shown%10 == 0 && shown < len(deduped) {
 			a, intr := ask("  -- more -- Press Enter for next page (q+Enter to stop): ")
 			if intr {
@@ -1442,7 +1447,7 @@ func showDisks() {
 		}
 	}
 	if shown == 0 {
-		fmt.Println("  (no data disk found)")
+		fmt.Println("  (no disk found)")
 	}
 	fmt.Println("==========================================================================")
 	pause()
@@ -1603,7 +1608,7 @@ func drawMenu() {
 	fmt.Println(strings.Repeat("-", w))
 	fmt.Println("  1. Configure network - static IP")
 	fmt.Println("  2. Configure network - DHCP")
-	fmt.Println("  3. Show data disks")
+	fmt.Println("  3. Show disks")
 	fmt.Println("  4. Ping test")
 	fmt.Println(strings.Repeat("-", w))
 	fmt.Println("  5. Reboot")
