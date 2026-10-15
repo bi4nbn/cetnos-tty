@@ -1197,9 +1197,27 @@ func resolveToPhysicalDisks(dev string) []string {
 
 // systemDisks finds which whole disks host the root filesystem, /boot, and
 // /boot/efi. Uses /proc/mounts plus /sys/class/block to resolve the underlying
-// physical disks without depending on lsblk.
+// physical disks without depending on lsblk. Falls back to /proc/cmdline root=
+// when /proc/mounts shows /dev/root (initramfs common).
 func systemDisks() []string {
 	disks := map[string]bool{}
+	addDev := func(device string) {
+		if !strings.HasPrefix(device, "/dev/") {
+			return
+		}
+		name := strings.TrimPrefix(device, "/dev/")
+		// /dev/mapper/vg-root -> dm-0
+		if strings.HasPrefix(name, "mapper/") {
+			if link, err := os.Readlink("/dev/" + name); err == nil {
+				name = filepath.Base(link)
+			}
+		}
+		for _, phys := range resolveToPhysicalDisks(name) {
+			if phys != "" {
+				disks[phys] = true
+			}
+		}
+	}
 	data, err := os.ReadFile("/proc/mounts")
 	if err != nil {
 		return nil
@@ -1213,19 +1231,23 @@ func systemDisks() []string {
 		if mountPoint != "/" && mountPoint != "/boot" && mountPoint != "/boot/efi" {
 			continue
 		}
-		if !strings.HasPrefix(device, "/dev/") {
-			continue // overlay / tmpfs / nfs etc.
-		}
-		name := strings.TrimPrefix(device, "/dev/")
-		// /dev/mapper/vg-root -> dm-0
-		if strings.HasPrefix(name, "mapper/") {
-			if link, err := os.Readlink("/dev/" + name); err == nil {
-				name = filepath.Base(link)
-			}
-		}
-		for _, phys := range resolveToPhysicalDisks(name) {
-			if phys != "" {
-				disks[phys] = true
+		addDev(device)
+	}
+	// Fallback: /proc/cmdline root= (handles /dev/root, UUID=, LABEL=)
+	if len(disks) == 0 {
+		if cmd, err := os.ReadFile("/proc/cmdline"); err == nil {
+			for _, f := range strings.Fields(string(cmd)) {
+				if strings.HasPrefix(f, "root=") {
+					r := strings.TrimPrefix(f, "root=")
+					if strings.HasPrefix(r, "UUID=") || strings.HasPrefix(r, "LABEL=") {
+						if out, err := run("blkid", "-t", r, "-o", "device"); err == nil {
+							addDev(strings.TrimSpace(out))
+						}
+					} else {
+						addDev(r)
+					}
+					break
+				}
 			}
 		}
 	}
