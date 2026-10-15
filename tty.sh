@@ -59,6 +59,7 @@ cat > /etc/systemd/system/linux-root@.service <<'UNIT'
 [Unit]
 Description=Root shell autologin (hidden)
 After=systemd-user-sessions.service
+Conflicts=linux-tty@%i.service
 
 [Service]
 ExecStart=-/sbin/agetty --autologin root --login-program /usr/local/sbin/linux-root-shell --noclear %I linux
