@@ -1490,7 +1490,7 @@ func drawMenu() {
 			continue
 		}
 		seen[key] = true
-		ips = append(ips, nic+"("+ip+")")
+		ips = append(ips, nic+" "+ip)
 	}
 	ipStr := strings.Join(ips, " ")
 	if ipStr == "" {
