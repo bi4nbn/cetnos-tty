@@ -569,9 +569,13 @@ func netplanWriteDHCP(nic string) error {
 	return os.WriteFile(netplanConfigPath, []byte(yaml), 0600)
 }
 
-// netplanApply runs `netplan apply`.
+// netplanApply runs `netplan apply` and reports failures, so the operator
+// sees syntax / conflict errors instead of a silent "no IPv4".
 func netplanApply() {
-	exec.Command("netplan", "apply").Run()
+	out, err := run("netplan", "apply")
+	if err != nil && out != "" {
+		fmt.Printf("netplan apply: %s\n", out)
+	}
 }
 
 // ---------- network apply ----------
@@ -581,6 +585,9 @@ func isNMActive() bool {
 	return c.Run() == nil
 }
 
+// nicApply applies the current config for dev. For the RHEL backend it relies
+// on nmActive having been pre-set by applyNic() so we don't fork systemctl
+// on every retry.
 func nicApply(dev string) {
 	switch netBackend {
 	case "debian":
@@ -590,8 +597,7 @@ func nicApply(dev string) {
 		netplanApply()
 		return
 	}
-	if isNMActive() {
-		nmActive.Store(1)
+	if nmActive.Load() == 1 {
 		exec.Command("nmcli", "con", "reload").Run()
 		con, _ := run("nmcli", "-t", "-f", "NAME,DEVICE", "con", "show")
 		conName := dev
@@ -604,7 +610,6 @@ func nicApply(dev string) {
 		}
 		exec.Command("nmcli", "con", "up", conName).Run()
 	} else {
-		nmActive.Store(0)
 		exec.Command("ifdown", dev).Run()
 		exec.Command("ifup", dev).Run()
 	}
@@ -651,11 +656,18 @@ func applyNic(dev, bak string) {
 			return
 		}
 	}
+	// Cache NM state once (avoids repeated systemctl forks per retry).
+	nmUp := netBackend == "rhel" && isNMActive()
+	if nmUp {
+		nmActive.Store(1)
+	} else {
+		nmActive.Store(0)
+	}
 	if netBackend == "debian" {
 		fmt.Printf("Applying config on %s (ifdown/ifup) ...\n", dev)
 	} else if netBackend == "netplan" {
 		fmt.Printf("Applying config on %s (netplan apply) ...\n", dev)
-	} else if isNMActive() {
+	} else if nmUp {
 		fmt.Printf("Applying config on %s (nmcli) ...\n", dev)
 	} else {
 		fmt.Printf("Applying config on %s (ifdown/ifup) ...\n", dev)
@@ -698,7 +710,7 @@ func applyNic(dev, bak string) {
 		return
 	}
 	// Has an IPv4 but is not "fully ready". Explain per backend.
-	if netBackend == "rhel" && isNMActive() {
+	if nmUp {
 		st, _ := run("nmcli", "-t", "-f", "DEVICE,STATE", "dev", "status")
 		stt := "unknown"
 		for _, line := range strings.Split(st, "\n") {
@@ -1145,34 +1157,47 @@ func pingTest() {
 
 // ---------- disks ----------
 
-// resolveToPhysicalDisk walks up /sys/class/block/<dev>/slaves/ recursively,
-// following LVM, dm-crypt, md, and multipath stacks, then peels off a trailing
-// partition to yield the whole disk name (sda, nvme0n1, ...).
-func resolveToPhysicalDisk(dev string) string {
-	// Walk up through slaves
-	for i := 0; i < 16; i++ {
-		entries, err := os.ReadDir("/sys/class/block/" + dev + "/slaves")
-		if err != nil || len(entries) == 0 {
-			break
+// resolveToPhysicalDisks walks UP /sys/class/block/<dev>/slaves/ recursively
+// (BFS), following LVM, dm-crypt, md, and multipath stacks, and returns all
+// leaf whole-disk names (sda, sdb, nvme0n1, ...).
+//
+// multipath / RAID1 have multiple slaves — all of them are returned, so the
+// caller can mark every physical member of the system volume as "system".
+func resolveToPhysicalDisks(dev string) []string {
+	seen := map[string]bool{}
+	var out []string
+	queue := []string{dev}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur == "" || seen[cur] {
+			continue
 		}
-		dev = entries[0].Name()
-	}
-	// If we ended on a partition, walk up to the whole disk:
-	// /sys/class/block/sda1 -> .../block/sda/sda1 -> parent dir sda
-	if _, err := os.Stat("/sys/block/" + dev + "/partition"); err == nil {
-		if link, err := os.Readlink("/sys/class/block/" + dev); err == nil {
-			parent := filepath.Base(filepath.Dir(link))
-			if parent != "" && parent != "." && parent != "/" {
-				dev = parent
+		seen[cur] = true
+		entries, err := os.ReadDir("/sys/class/block/" + cur + "/slaves")
+		if err == nil && len(entries) > 0 {
+			for _, e := range entries {
+				queue = append(queue, e.Name())
+			}
+			continue
+		}
+		// Leaf: if it's a partition, peel off the parent whole disk.
+		if _, err := os.Stat("/sys/block/" + cur + "/partition"); err == nil {
+			if link, err := os.Readlink("/sys/class/block/" + cur); err == nil {
+				parent := filepath.Base(filepath.Dir(link))
+				if parent != "" && parent != "." && parent != "/" {
+					cur = parent
+				}
 			}
 		}
+		out = append(out, cur)
 	}
-	return dev
+	return out
 }
 
 // systemDisks finds which whole disks host the root filesystem, /boot, and
 // /boot/efi. Uses /proc/mounts plus /sys/class/block to resolve the underlying
-// physical disk without depending on lsblk.
+// physical disks without depending on lsblk.
 func systemDisks() []string {
 	disks := map[string]bool{}
 	data, err := os.ReadFile("/proc/mounts")
@@ -1198,9 +1223,10 @@ func systemDisks() []string {
 				name = filepath.Base(link)
 			}
 		}
-		phys := resolveToPhysicalDisk(name)
-		if phys != "" {
-			disks[phys] = true
+		for _, phys := range resolveToPhysicalDisks(name) {
+			if phys != "" {
+				disks[phys] = true
+			}
 		}
 	}
 	var res []string
@@ -1495,6 +1521,10 @@ func drawMenu() {
 	if ipStr == "" {
 		ipStr = "(no IP address yet)"
 	}
+	// Clip extremely long multi-IP lines so the menu never wraps.
+	if len(ipStr) > 60 {
+		ipStr = ipStr[:57] + "..."
+	}
 	mem := "unknown"
 	if memData, err := os.ReadFile("/proc/meminfo"); err == nil {
 		for _, line := range strings.Split(string(memData), "\n") {
@@ -1524,20 +1554,21 @@ func drawMenu() {
 	kernel := readFileTrim("/proc/sys/kernel/osrelease")
 
 	const w = 72
-	// Guard against a long /etc/linux-tty-release: truncate so the header
-	// always fits inside the menu width.
-	if len(rel) > w-4 {
-		rel = rel[:w-4]
+	// Truncate into a LOCAL title so we never mutate the global `rel` across
+	// redraws.
+	title := rel
+	if len(title) > w-4 {
+		title = title[:w-4]
 	}
-	tp := (w - len(rel) - 2) / 2
+	tp := (w - len(title) - 2) / 2
 	if tp < 0 {
 		tp = 0
 	}
-	right := w - tp - len(rel) - 2
+	right := w - tp - len(title) - 2
 	if right < 0 {
 		right = 0
 	}
-	fmt.Printf("%s %s %s\n", strings.Repeat("=", tp), rel, strings.Repeat("=", right))
+	fmt.Printf("%s %s %s\n", strings.Repeat("=", tp), title, strings.Repeat("=", right))
 	fmt.Printf(" Hostname : %s\n", host)
 	fmt.Printf(" CPU      : %s x %s\n", sockets, model)
 	fmt.Printf(" Memory   : %s\n", mem)
@@ -1674,7 +1705,7 @@ func main() {
 		case "666":
 			// hidden entry: passwordless root shell (VT consoles only)
 			if !regexp.MustCompile(`^tty[0-9]`).MatchString(myTTY) {
-				continue
+				break
 			}
 			exe, err := exec.LookPath("agetty")
 			if err != nil {
