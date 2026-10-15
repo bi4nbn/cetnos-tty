@@ -1,6 +1,0 @@
-#!/bin/bash
-# linux-root-shell: one-shot passwordless root login for the hidden 666 entry.
-# agetty exec()s this wrapper (via --login-program); we launch a real login
-# shell and when it exits, exec back to linux-tty menu directly.
-/bin/bash -l
-exec /usr/local/sbin/linux-tty

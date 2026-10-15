@@ -1,7 +1,0 @@
-#!/bin/bash
-# login-exit: normal login prompt, then return to linux-tty menu.
-# Reset terminal fully, run /bin/login which handles username+password.
-stty sane 2>/dev/null
-clear
-/bin/login
-exec /usr/local/sbin/linux-tty
