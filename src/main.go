@@ -1840,13 +1840,7 @@ func drawMenu() {
 	}
 	kernel := readFileTrim("/proc/sys/kernel/osrelease")
 
-	w := 72
-	if _, cols, err := getTTYSize(); err == nil && cols > 0 {
-		w = cols - 2
-		if w < 60 {
-			w = 60
-		}
-	}
+	w := 80
 	// Truncate into a LOCAL title so we never mutate the global `rel` across
 	// redraws.
 	title := rel
@@ -1863,6 +1857,9 @@ func drawMenu() {
 	}
 	fmt.Printf("%s %s %s\n", strings.Repeat("=", tp), title, strings.Repeat("=", right))
 	fmt.Printf(" Hostname : %s\n", host)
+	if len(model) > 40 {
+		model = model[:40]
+	}
 	fmt.Printf(" CPU      : %s x %s (%d threads)\n", sockets, model, threads)
 	fmt.Printf(" Memory   : %s\n", mem)
 	fmt.Printf(" Kernel   : %-26s Boot : %s\n", kernel, boot)
