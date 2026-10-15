@@ -1332,7 +1332,7 @@ func systemDisks() []string {
 
 func diskType(dev string) string {
 	if strings.HasPrefix(dev, "nvme") {
-		return "NVMe SSD"
+		return "NVMe-SSD"
 	}
 	bus, _, _ := diskInfo(dev)
 	rot := readFileTrim("/sys/block/" + dev + "/queue/rotational")
@@ -1342,9 +1342,9 @@ func diskType(dev string) string {
 	}
 	switch bus {
 	case "ata", "sata":
-		return "SATA " + media
+		return "SATA-" + media
 	case "scsi", "sas":
-		return "SAS " + media
+		return "SAS-" + media
 	}
 	return media
 }
@@ -1640,7 +1640,7 @@ func showDisks() {
 						model = info.Model
 					}
 					if info.Intf != "" && info.Med != "" {
-						dt = info.Intf + " " + info.Med
+						dt = info.Intf + "-" + info.Med
 					}
 				}
 			}
