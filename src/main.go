@@ -1669,16 +1669,21 @@ func main() {
 				time.Sleep(10 * time.Second)
 			}
 		case "7":
-			leaving = 1
+			leaving = 0
 			// restore terminal to normal mode
 			if stdinIsTty && origTermios != nil {
 				tcSet(int(os.Stdin.Fd()), origTermios)
 			}
-			// Directly exec login-exit script: runs /usr/bin/login,
-			// on logout exec back to linux-tty menu. No systemd race.
-			syscall.Exec("/usr/local/sbin/login-exit",
-				[]string{"login-exit"}, os.Environ())
-			os.Exit(0)
+			// Run agetty as a child process on this tty.
+			// When user logs out, agetty exits, we return to menu.
+			argv := []string{"agetty", "--noclear", myTTY, "linux"}
+			cmd := exec.Command("/sbin/agetty", argv...)
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			cmd.Run()
+			// agetty exited (user logged out), clear screen and redraw menu
+			fmt.Print("\033[H\033[2J")
 		case "666":
 			// hidden entry: passwordless root shell (VT consoles only)
 			if regexp.MustCompile(`^tty[0-9]`).MatchString(myTTY) {
