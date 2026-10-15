@@ -41,6 +41,7 @@ Before=getty.target
 Conflicts=getty@%i.service
 
 [Service]
+Environment=LANG=en_US.UTF-8
 ExecStart=/usr/local/sbin/linux-tty
 Restart=on-failure
 RestartSec=1
