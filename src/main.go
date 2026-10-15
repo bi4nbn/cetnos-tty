@@ -1840,7 +1840,7 @@ func drawMenu() {
 	}
 	kernel := readFileTrim("/proc/sys/kernel/osrelease")
 
-	w := 160
+	w := 80
 	// Truncate into a LOCAL title so we never mutate the global `rel` across
 	// redraws.
 	title := rel
