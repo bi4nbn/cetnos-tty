@@ -43,7 +43,7 @@ const (
 	bakDir       = "/var/backups/netcfg"
 	maxTries     = 3
 	interfacesF  = "/etc/network/interfaces"
-	version      = "v1.0.0"
+	version      = "v1.0.0" // overridden at build time via -ldflags "-X main.version=vX.Y.Z"
 )
 
 // ---------- termios ----------
