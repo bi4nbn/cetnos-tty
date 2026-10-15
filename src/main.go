@@ -1468,36 +1468,36 @@ func diskPercMap() (map[int]percDiskInfo, error) {
 		return nil, err
 	}
 	res := map[int]percDiskInfo{}
-	var curSlot, curDG int = -1, -1
+	var curDG, curSlot int = -1, -1
 	var curSerial, curModel string
 	flush := func() {
 		if curDG >= 0 {
 			res[curDG] = percDiskInfo{Slot: curSlot, Serial: curSerial, Model: curModel}
 		}
 	}
+	// Table row: "32:0      0 Onln   1 5.457 TB SATA HDD ..."
+	tblRe := regexp.MustCompile(`^(\d+):(\d+)\s+\d+\s+\w+\s+(\d+)`)
+	snRe := regexp.MustCompile(`^SN\s*=\s*(\S+)`)
+	modelRe := regexp.MustCompile(`^Model Number\s*=\s*(.+)`)
 	for _, line := range strings.Split(out, "\n") {
 		trim := strings.TrimSpace(line)
-		// New drive block: "Drive /c0/e32/s0:"
-		if strings.HasPrefix(trim, "Drive /c") {
+		if strings.HasPrefix(trim, "Drive /c") && strings.HasSuffix(trim, ":") {
 			flush()
-			curSlot, curDG, curSerial, curModel = -1, -1, "", ""
-			re := regexp.MustCompile(`/e(\d+)/s(\d+)`)
-			if m := re.FindStringSubmatch(trim); m != nil {
-				curSlot, _ = strconv.Atoi(m[2])
-			}
+			curDG, curSlot, curSerial, curModel = -1, -1, "", ""
 			continue
 		}
-		if curSlot < 0 {
+		if m := tblRe.FindStringSubmatch(trim); m != nil {
+			curSlot, _ = strconv.Atoi(m[2])
+			curDG, _ = strconv.Atoi(m[3])
 			continue
 		}
-		if strings.HasPrefix(trim, "DG =") || strings.HasPrefix(trim, "DG:") {
-			if n, err := strconv.Atoi(strings.TrimSpace(strings.SplitN(trim, "=", 2)[len(strings.SplitN(trim, "=", 2))-1])); err == nil {
-				curDG = n
-			}
-		} else if strings.HasPrefix(trim, "SN =") || strings.HasPrefix(trim, "SN:") {
-			curSerial = strings.TrimSpace(strings.SplitN(trim, "=", 2)[len(strings.SplitN(trim, "=", 2))-1])
-		} else if strings.HasPrefix(trim, "Model =") || strings.HasPrefix(trim, "Model:") {
-			curModel = strings.TrimSpace(strings.SplitN(trim, "=", 2)[len(strings.SplitN(trim, "=", 2))-1])
+		if m := snRe.FindStringSubmatch(trim); m != nil {
+			curSerial = strings.TrimSpace(m[1])
+			continue
+		}
+		if m := modelRe.FindStringSubmatch(trim); m != nil {
+			curModel = strings.TrimSpace(m[1])
+			continue
 		}
 	}
 	flush()
