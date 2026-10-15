@@ -1430,6 +1430,24 @@ func diskSizeHuman(dev string) string {
 	return fmt.Sprintf("%.1fG", gb)
 }
 
+// diskSlot parses SCSI target id from /sys/class/block/<dev> symlink.
+// On PERC H330 (hpsa) RAID0 single-disk VDs, target id == bay slot.
+func diskSlot(dev string) string {
+	link, err := os.Readlink("/sys/class/block/" + dev)
+	if err != nil {
+		return "-"
+	}
+	for _, p := range strings.Split(link, "/") {
+		f := strings.Split(p, ":")
+		if len(f) == 4 {
+			if slot, err := strconv.Atoi(f[2]); err == nil {
+				return fmt.Sprintf("Slot %d", slot)
+			}
+		}
+	}
+	return "-"
+}
+
 func showDisks() {
 	syslist := systemDisks()
 	sysSet := map[string]bool{}
@@ -1442,8 +1460,8 @@ func showDisks() {
 	}
 	fmt.Println("========================== DISKS ===========================")
 	fmt.Println()
-	fmt.Printf("  %-14s %-8s %-5s %-5s %-22s %s\n", "DEV", "SIZE", "TYPE", "BUS", "MODEL", "SERIAL")
-	fmt.Println("  --------------------------------------------------------------")
+	fmt.Printf("  %-14s %-8s %-5s %-22s %-12s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
+	fmt.Println("  ------------------------------------------------------------------")
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
 	// nvme0c0n1). Only apply dedup to NVMe devices; RAID virtual disks
@@ -1485,7 +1503,8 @@ func showDisks() {
 		}
 		size := diskSizeHuman(dev)
 		dt := diskType(dev)
-		bus, model, serial := diskInfo(dev)
+		_, model, serial := diskInfo(dev)
+		slot := diskSlot(dev)
 		if len(model) > 22 {
 			model = model[:22]
 		}
@@ -1493,7 +1512,7 @@ func showDisks() {
 			serial = serial[:18]
 		}
 		shown++
-		fmt.Printf("  %-14s %-8s %-5s %-5s %-22s %s\n", display, size, dt, bus, model, serial)
+		fmt.Printf("  %-14s %-8s %-5s %-22s %-12s %s\n", display, size, dt, model, slot, serial)
 		if shown%10 == 0 && shown < len(deduped) {
 			a, intr := ask("  -- more -- Press Enter for next page (q+Enter to stop): ")
 			if intr {
