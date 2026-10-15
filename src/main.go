@@ -1165,54 +1165,39 @@ func resolveToDisk(dev string) string {
 }
 
 // systemDisks finds which whole disks host the root filesystem, /boot,
-// /boot/efi, and swap. Uses lsblk -no PKNAME as the primary method
-// (works correctly with RAID/LVM/multipath), falls back to /proc/mounts.
+// /boot/efi, and swap. Reads /proc/mounts to find the device mounted on
+// "/", then uses lsblk -no PKNAME /dev/<dev> to resolve to the whole disk
+// (works through LVM, dm, RAID, multipath).
 func systemDisks() []string {
 	disks := map[string]bool{}
-
-	// Primary: lsblk -no PKNAME / gives the parent disk of the root mount.
-	// e.g. "sda" whether / is on sda2, LVM, or dm-raid.
-	if out, err := run("lsblk", "-no", "PKNAME", "/"); err == nil {
-		for _, line := range strings.Split(out, "\n") {
-			d := strings.TrimSpace(line)
-			if d != "" {
-				disks[d] = true
-			}
-		}
+	data, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return nil
 	}
-
-	// Also add /boot and /boot/efi parents via lsblk.
-	for _, mp := range []string{"/boot", "/boot/efi"} {
-		if out, err := run("lsblk", "-no", "PKNAME", mp); err == nil {
-			for _, line := range strings.Split(out, "\n") {
-				d := strings.TrimSpace(line)
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		device, mountPoint := fields[0], fields[1]
+		if mountPoint != "/" && mountPoint != "/boot" && mountPoint != "/boot/efi" {
+			continue
+		}
+		devName := strings.TrimPrefix(device, "/dev/")
+		// Use lsblk to resolve the whole disk behind this device,
+		// whether it's a partition, LVM, dm-raid, or multipath.
+		if out, err := run("lsblk", "-no", "PKNAME", "/dev/"+devName); err == nil {
+			for _, d := range strings.Split(out, "\n") {
+				d = strings.TrimSpace(d)
 				if d != "" {
 					disks[d] = true
 				}
 			}
-		}
-	}
-
-	// Fallback: /proc/mounts parsing if lsblk returned nothing.
-	if len(disks) == 0 {
-		data, err := os.ReadFile("/proc/mounts")
-		if err != nil {
-			return nil
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) < 3 {
-				continue
-			}
-			device, mountPoint := fields[0], fields[1]
-			if mountPoint != "/" && mountPoint != "/boot" && mountPoint != "/boot/efi" {
-				continue
-			}
-			devName := strings.TrimPrefix(device, "/dev/")
+		} else {
+			// fallback: manual resolution
 			disks[resolveToDisk(devName)] = true
 		}
 	}
-
 	var res []string
 	for d := range disks {
 		res = append(res, d)
