@@ -55,26 +55,6 @@ KillMode=process
 WantedBy=multi-user.target
 UNIT
 
-cat > /etc/systemd/system/linux-root@.service <<'UNIT'
-[Unit]
-Description=Root shell autologin (hidden)
-After=systemd-user-sessions.service
-Conflicts=linux-tty@%i.service
-
-[Service]
-ExecStart=-/sbin/agetty --autologin root --login-program /usr/local/sbin/linux-root-shell --noclear %I linux
-Restart=no
-StandardInput=tty
-StandardOutput=tty
-StandardError=tty
-TTYPath=/dev/%I
-KillMode=process
-ExecStopPost=/usr/bin/systemctl start linux-tty@%i.service
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
 # root-shell script
 echo "[4/5] installing root-shell ..."
 cat > "$SHELL_PATH" <<'SH'
