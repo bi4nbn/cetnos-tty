@@ -1332,16 +1332,21 @@ func systemDisks() []string {
 
 func diskType(dev string) string {
 	if strings.HasPrefix(dev, "nvme") {
-		return "NVMe"
+		return "NVMe SSD"
 	}
+	bus, _, _ := diskInfo(dev)
 	rot := readFileTrim("/sys/block/" + dev + "/queue/rotational")
-	switch rot {
-	case "0":
-		return "SSD"
-	case "1":
-		return "HDD"
+	media := "SSD"
+	if rot == "1" {
+		media = "HDD"
 	}
-	return "-"
+	switch bus {
+	case "ata", "sata":
+		return "SATA " + media
+	case "scsi", "sas":
+		return "SAS " + media
+	}
+	return media
 }
 
 func diskInfo(dev string) (bus, model, serial string) {
@@ -1569,7 +1574,7 @@ func showDisks() {
 	}
 	fmt.Println("========================== DISKS ===========================")
 	fmt.Println()
-	fmt.Printf("  %-12s %-6s %-4s %-16s %-3s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
+	fmt.Printf("  %-12s %-6s %-8s %-16s %-3s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
 	fmt.Println("  ------------------------------------------------------------")
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
@@ -1653,7 +1658,7 @@ func showDisks() {
 			serial = serial[:30]
 		}
 		shown++
-		fmt.Printf("  %-12s %-6s %-4s %-16s %-3s %s\n", display, size, dt, model, slot, serial)
+		fmt.Printf("  %-12s %-6s %-8s %-16s %-3s %s\n", display, size, dt, model, slot, serial)
 		if shown%20 == 0 && shown < len(deduped) {
 			a, intr := ask("  -- more -- Press Enter for next page (q+Enter to stop): ")
 			if intr {
