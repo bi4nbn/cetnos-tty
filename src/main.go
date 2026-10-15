@@ -1529,6 +1529,17 @@ func diskPercMap() (map[int]percDiskInfo, error) {
 	return res, nil
 }
 
+// centerStr centers s within width w.
+func centerStr(s string, w int) string {
+	if len(s) >= w {
+		return s[:w]
+	}
+	pad := w - len(s)
+	left := pad / 2
+	right := pad - left
+	return strings.Repeat(" ", left) + s + strings.Repeat(" ", right)
+}
+
 // sysfsTarget returns the SCSI target id for a block device (== VD/DG number).
 func sysfsTarget(dev string) int {
 	link, err := os.Readlink("/sys/class/block/" + dev)
@@ -1558,7 +1569,9 @@ func showDisks() {
 	}
 	fmt.Println("========================== DISKS ===========================")
 	fmt.Println()
-	fmt.Printf("  %-12s %-6s %-4s %-16s %-3s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
+	fmt.Printf("  %s %s %s %s %s %s\n",
+		centerStr("DEV", 12), centerStr("SIZE", 6), centerStr("TYPE", 4),
+		centerStr("MODEL", 16), centerStr("SLOT", 3), "SERIAL")
 	fmt.Println("  ------------------------------------------------------------")
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
