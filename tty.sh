@@ -89,7 +89,7 @@ echo "[5/6] configuring getty override ..."
 mkdir -p /etc/systemd/system/getty@tty1.service.d
 cat > /etc/systemd/system/getty@tty1.service.d/override.conf <<'CONF'
 [Service]
-ExecStopPost=/usr/bin/systemctl start linux-tty@tty1.service
+ExecStopPost=/bin/bash -c 'sleep 1; /usr/bin/systemctl start linux-tty@tty1.service'
 CONF
 
 # disable sysrq
