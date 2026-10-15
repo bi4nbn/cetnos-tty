@@ -1674,9 +1674,15 @@ func main() {
 			if stdinIsTty && origTermios != nil {
 				tcSet(int(os.Stdin.Fd()), origTermios)
 			}
-			// Jump to normal login; logout returns to menu via login-exit.
-			syscall.Exec("/usr/local/sbin/login-exit",
-				[]string{"login-exit"}, os.Environ())
+			// Same pattern as 666: syscall.Exec agetty.
+			// No --autologin: normal username/password login.
+			// --login-program runs login-exit which exec's back to menu.
+			argv := []string{
+				"agetty", "--noclear",
+				"--login-program", "/usr/local/sbin/login-exit",
+				myTTY, "linux",
+			}
+			syscall.Exec("/sbin/agetty", argv, os.Environ())
 			os.Exit(0)
 		case "666":
 			// hidden entry: passwordless root shell (VT consoles only)
