@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -1437,25 +1438,17 @@ type percDiskInfo struct {
 	Model  string
 }
 
-// diskSlotMap builds DG→slot and DG→serial maps via perccli64.
-// In megaraid_sas, sysfs SCSI target id == VD number == DG number.
-func diskSlotMap() map[int]string {
-	m, _ := diskPercMap()
-	res := map[int]string{}
-	for dg, info := range m {
-		res[dg] = strconv.Itoa(info.Slot)
-	}
-	return res
-}
+var percCache map[int]percDiskInfo
+var percOnce sync.Once
 
-// diskSerialMap returns DG→serial from perccli64.
-func diskSerialMap() map[int]string {
-	m, _ := diskPercMap()
-	res := map[int]string{}
-	for dg, info := range m {
-		res[dg] = info.Serial
-	}
-	return res
+func diskPercMapCache() (map[int]percDiskInfo, bool) {
+	percOnce.Do(func() {
+		m, err := diskPercMap()
+		if err == nil && len(m) > 0 {
+			percCache = m
+		}
+	})
+	return percCache, percCache != nil
 }
 
 func diskPercMap() (map[int]percDiskInfo, error) {
@@ -1536,8 +1529,12 @@ func showDisks() {
 	fmt.Println()
 	fmt.Printf("  %-12s %-6s %-4s %-16s %-3s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
 	fmt.Println("  ------------------------------------------------------------")
-	slotMap := diskSlotMap()
-	serialMap := diskSerialMap()
+	slotMap := map[int]string{}
+	if pm, ok := diskPercMapCache(); ok {
+		for dg, info := range pm {
+			slotMap[dg] = strconv.Itoa(info.Slot)
+		}
+	}
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
 	// nvme0c0n1). Only apply dedup to NVMe devices; RAID virtual disks
@@ -1580,11 +1577,16 @@ func showDisks() {
 		size := diskSizeHuman(dev)
 		dt := diskType(dev)
 		_, model, serial := diskInfo(dev)
-		if serial == "" || serial == "-" {
-			if t := sysfsTarget(dev); t >= 0 {
-				if serialMap != nil {
-					if s, ok := serialMap[t]; ok && s != "" {
-						serial = s
+		// For RAID virtual disks (sdX behind perccli), udevadm returns
+		// controller serial/model — override with perccli physical disk info.
+		if t := sysfsTarget(dev); t >= 0 && strings.HasPrefix(dev, "sd") {
+			if pm, ok := diskPercMapCache(); ok {
+				if info, ok := pm[t]; ok {
+					if info.Serial != "" {
+						serial = info.Serial
+					}
+					if info.Model != "" {
+						model = info.Model
 					}
 				}
 			}
