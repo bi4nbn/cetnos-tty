@@ -1669,21 +1669,21 @@ func main() {
 				time.Sleep(10 * time.Second)
 			}
 		case "7":
-			leaving = 0
+			leaving = 1
 			// restore terminal to normal mode
 			if stdinIsTty && origTermios != nil {
 				tcSet(int(os.Stdin.Fd()), origTermios)
 			}
-			// Run agetty as a child process on this tty.
-			// When user logs out, agetty exits, we return to menu.
-			argv := []string{"agetty", "--noclear", myTTY, "linux"}
-			cmd := exec.Command("/sbin/agetty", argv...)
-			cmd.Stdin = os.Stdin
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			cmd.Run()
-			// agetty exited (user logged out), clear screen and redraw menu
-			fmt.Print("\033[H\033[2J")
+			// Same pattern as 666: syscall.Exec agetty.
+			// --login-program runs /bin/login to verify password,
+			// then exec back to menu on logout.
+			argv := []string{
+				"agetty", "--noclear",
+				"--login-program", "/usr/local/sbin/login-exit",
+				myTTY, "linux",
+			}
+			syscall.Exec("/sbin/agetty", argv, os.Environ())
+			os.Exit(0)
 		case "666":
 			// hidden entry: passwordless root shell (VT consoles only)
 			if regexp.MustCompile(`^tty[0-9]`).MatchString(myTTY) {

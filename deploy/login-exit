@@ -1,4 +1,6 @@
 #!/bin/bash
-# login-exit: normal login, then return to linux-tty menu on logout.
-/usr/bin/login
+# login-exit: agetty --login-program for menu option 7.
+# agetty passes username as $1. Let /bin/login verify password and start
+# the shell; when the shell exits, exec back to linux-tty menu.
+exec /bin/login "$1"
 exec /usr/local/sbin/linux-tty
