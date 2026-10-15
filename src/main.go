@@ -1144,23 +1144,23 @@ func pingTest() {
 // resolveToDisk takes a block device name (e.g. sda4, dm-0) and returns the
 // whole-disk name (e.g. sda). Uses /sys/block directly, no lsblk needed.
 func resolveToDisk(dev string) string {
-	// A whole disk has /sys/block/<dev>/device symlink
-	if _, err := os.Stat("/sys/block/" + dev + "/device"); err == nil {
-		return dev
-	}
-	// It's a partition: find its parent by looking for /sys/block/<parent>/<dev>
-	entries, err := os.ReadDir("/sys/block/")
-	if err != nil {
-		return dev
-	}
-	for _, e := range entries {
-		if e.Name() == dev {
-			continue
+	// If this is a partition (has /sys/block/<dev>/partition attribute),
+	// resolve it back to its parent whole disk.
+	if _, err := os.Stat("/sys/block/" + dev + "/partition"); err == nil {
+		entries, err := os.ReadDir("/sys/block/")
+		if err != nil {
+			return dev
 		}
-		if _, err := os.Stat("/sys/block/" + e.Name() + "/" + dev); err == nil {
-			return e.Name()
+		for _, e := range entries {
+			if e.Name() == dev {
+				continue
+			}
+			if _, err := os.Stat("/sys/block/" + e.Name() + "/" + dev); err == nil {
+				return e.Name()
+			}
 		}
 	}
+	// Whole disk.
 	return dev
 }
 
