@@ -1569,9 +1569,7 @@ func showDisks() {
 	}
 	fmt.Println("========================== DISKS ===========================")
 	fmt.Println()
-	fmt.Printf("  %s %s %s %s %s %s\n",
-		centerStr("DEV", 12), centerStr("SIZE", 6), centerStr("TYPE", 4),
-		centerStr("MODEL", 16), centerStr("SLOT", 3), "SERIAL")
+	fmt.Printf("  %-12s %-6s %-4s %-16s %-3s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
 	fmt.Println("  ------------------------------------------------------------")
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
