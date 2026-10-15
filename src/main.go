@@ -1840,12 +1840,7 @@ func drawMenu() {
 	}
 	kernel := readFileTrim("/proc/sys/kernel/osrelease")
 
-	// Force tty to 80x24 to avoid right-side duplication on wide consoles
-	fd := int(os.Stdout.Fd())
-	ws := [4]uint16{24, 80, 0, 0}
-	syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(0x5414), uintptr(unsafe.Pointer(&ws[0])))
-
-	w := 80
+	w := 160
 	// Truncate into a LOCAL title so we never mutate the global `rel` across
 	// redraws.
 	title := rel
