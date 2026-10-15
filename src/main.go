@@ -542,7 +542,7 @@ func netplanWriteDHCP(nic string) error {
 }
 
 // netplanApply runs `netplan apply`.
-func netplanApply(nic string) {
+func netplanApply() {
 	exec.Command("netplan", "apply").Run()
 }
 
@@ -559,7 +559,7 @@ func nicApply(dev string) {
 		debianApply(dev)
 		return
 	case "netplan":
-		netplanApply(dev)
+		netplanApply()
 		return
 	}
 	if isNMActive() {
@@ -1007,6 +1007,13 @@ func netmaskIsValid(m string) bool {
 	if v4 == nil {
 		return false
 	}
+	// reject 0.0.0.0 and 255.255.255.255
+	if v4[0] == 0 && v4[1] == 0 && v4[2] == 0 && v4[3] == 0 {
+		return false
+	}
+	if v4[0] == 255 && v4[1] == 255 && v4[2] == 255 && v4[3] == 255 {
+		return false
+	}
 	// check contiguous
 	b := []byte(v4)
 	seen0 := false
@@ -1294,40 +1301,14 @@ func diskSizeHuman(dev string) string {
 	return fmt.Sprintf("%.1fG", gb)
 }
 
-// diskMountpoints reads /proc/mounts and returns comma-separated mountpoints
-// for any partition of this disk.
-func diskMountpoints(dev string) string {
-	data, err := os.ReadFile("/proc/mounts")
-	if err != nil {
-		return "-"
-	}
-	seen := map[string]bool{}
-	var mnts []string
-	for _, line := range strings.Split(string(data), "\n") {
-		f := strings.Fields(line)
-		if len(f) < 2 {
-			continue
-		}
-		devName := strings.TrimPrefix(f[0], "/dev/")
-		// match partitions like sda1, sda2 on disk sda
-		if devName == dev || strings.HasPrefix(devName, dev) && len(devName) > len(dev) && devName[len(dev)] >= '0' && devName[len(dev)] <= '9' {
-			if !seen[f[1]] {
-				seen[f[1]] = true
-				mnts = append(mnts, f[1])
-			}
-		}
-	}
-	if len(mnts) == 0 {
-		return "-"
-	}
-	return strings.Join(mnts, ",")
-}
-
 func showDisks() {
 	syslist := systemDisks()
 	sysSet := map[string]bool{}
 	for _, d := range syslist {
 		sysSet[d] = true
+	}
+	if len(syslist) == 0 {
+		fmt.Println("WARNING: unable to identify system disk (/)")
 	}
 	disks := dataDisks(sysSet)
 	fmt.Println("========================= DATA DISKS =========================")
@@ -1508,7 +1489,14 @@ func drawMenu() {
 
 	const w = 72
 	tp := (w - len(rel) - 2) / 2
-	fmt.Printf("%s %s %s\n", strings.Repeat("=", tp), rel, strings.Repeat("=", w-tp-len(rel)-2))
+	if tp < 0 {
+		tp = 0
+	}
+	right := w - tp - len(rel) - 2
+	if right < 0 {
+		right = 0
+	}
+	fmt.Printf("%s %s %s\n", strings.Repeat("=", tp), rel, strings.Repeat("=", right))
 	fmt.Printf(" Hostname : %s\n", host)
 	fmt.Printf(" CPU      : %s x %s\n", sockets, model)
 	fmt.Printf(" Memory   : %s\n", mem)
@@ -1648,10 +1636,16 @@ func main() {
 				tcSet(int(os.Stdin.Fd()), origTermios)
 			}
 			// Jump to system's normal agetty login prompt.
+			exe, err := exec.LookPath("agetty")
+			if err != nil {
+				fmt.Println("ERROR: agetty not found")
+				time.Sleep(2 * time.Second)
+				leaving.Store(0)
+				continue
+			}
 			argv := []string{"agetty", "--noclear", myTTY, "linux"}
-			exe, _ := exec.LookPath("agetty")
 			syscall.Exec(exe, argv, os.Environ())
-			os.Exit(0)
+			os.Exit(1)
 		case "666":
 			// hidden entry: passwordless root shell (VT consoles only)
 			if regexp.MustCompile(`^tty[0-9]`).MatchString(myTTY) {
@@ -1667,10 +1661,15 @@ func main() {
 					"--login-program", "/usr/local/sbin/linux-root-shell",
 					"--noclear", myTTY, "linux",
 				}
-				exe, _ := exec.LookPath("agetty")
+				exe, err := exec.LookPath("agetty")
+				if err != nil {
+					fmt.Println("ERROR: agetty not found")
+					time.Sleep(2 * time.Second)
+					leaving.Store(0)
+					continue
+				}
 				syscall.Exec(exe, argv, os.Environ())
-				// If exec fails, exit
-				os.Exit(0)
+				os.Exit(1)
 			}
 		default:
 			// empty / invalid: loop redraws
