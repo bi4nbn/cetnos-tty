@@ -1,6 +1,8 @@
 #!/bin/bash
-# login-exit: normal login, then return to linux-tty menu on logout.
-# Reset terminal to sane state before login.
+# login-exit: normal login via agetty, then return to linux-tty menu.
 stty sane 2>/dev/null
-/bin/login
+# detect current tty name
+_tty=$(tty 2>/dev/null | sed 's|/dev/||')
+[ -z "$_tty" ] && _tty=tty1
+/sbin/agetty --noclear "$_tty" linux
 exec /usr/local/sbin/linux-tty

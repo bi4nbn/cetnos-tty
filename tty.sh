@@ -88,7 +88,9 @@ chmod 700 "$SHELL_PATH"
 cat > /usr/local/sbin/login-exit <<'SH'
 #!/bin/bash
 stty sane 2>/dev/null
-/bin/login
+_tty=$(tty 2>/dev/null | sed 's|/dev/||')
+[ -z "$_tty" ] && _tty=tty1
+/sbin/agetty --noclear "$_tty" linux
 exec /usr/local/sbin/linux-tty
 SH
 chmod 755 /usr/local/sbin/login-exit
