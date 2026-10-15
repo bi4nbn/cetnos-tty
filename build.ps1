@@ -9,8 +9,12 @@ $cur = (Get-Content $verFile).Trim()
 
 # vX.Y.Z -> X.Y.Z
 $parts = $cur.TrimStart("v") -split "\."
+$major = [int]$parts[0]
+$minor = [int]$parts[1]
 $patch = [int]$parts[2] + 1
-$newVer = "v$($parts[0]).$($parts[1]).$patch"
+# patch reaches 10 -> roll over: patch=0, minor+1
+if ($patch -ge 10) { $patch = 0; $minor += 1 }
+$newVer = "v$major.$minor.$patch"
 $newVer | Out-File -Encoding ascii -NoNewline $verFile
 Write-Host "Building $newVer ..."
 
