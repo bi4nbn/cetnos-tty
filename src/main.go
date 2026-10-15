@@ -1564,6 +1564,17 @@ func sysfsTarget(dev string) int {
 	return -1
 }
 
+// getTTYSize returns (rows, cols) of the tty.
+func getTTYSize() (int, int, error) {
+	fd := int(os.Stdout.Fd())
+	var ws [4]uint16
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(0x5413), uintptr(unsafe.Pointer(&ws[0])))
+	if errno != 0 {
+		return 0, 0, errno
+	}
+	return int(ws[0]), int(ws[1]), nil
+}
+
 func showDisks() {
 	syslist := systemDisks()
 	sysSet := map[string]bool{}
@@ -1829,7 +1840,13 @@ func drawMenu() {
 	}
 	kernel := readFileTrim("/proc/sys/kernel/osrelease")
 
-	const w = 72
+	w := 72
+	if _, cols, err := getTTYSize(); err == nil && cols > 0 {
+		w = cols - 2
+		if w < 60 {
+			w = 60
+		}
+	}
 	// Truncate into a LOCAL title so we never mutate the global `rel` across
 	// redraws.
 	title := rel
