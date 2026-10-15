@@ -150,7 +150,7 @@ func readFileTrim(p string) string {
 
 func initSignals() {
 	ch := make(chan os.Signal, 16)
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		for s := range ch {
 			if s == os.Interrupt {
@@ -158,6 +158,9 @@ func initSignals() {
 			} else if s == syscall.SIGTERM {
 				exitCbreak()
 				os.Exit(143)
+			} else if s == syscall.SIGHUP {
+				exitCbreak()
+				os.Exit(0)
 			}
 		}
 	}()
@@ -267,20 +270,26 @@ func ask(prompt string) (string, bool) {
 			fmt.Println()
 			interrupt.Store(1)
 			return "", true
-		case 0x1b: // ESC or arrow key escape sequence
-			// Arrow keys send ESC [ A/B/C/D. Read one byte; if it is '[',
-			// read the final letter and discard the whole sequence.
-			// VMIN=0/VTIME=2 means Read returns quickly even if no byte follows.
+		case 0x1b: // ESC or CSI escape sequence (arrow/Home/End/Delete/PgUp/PgDn)
 			peek := make([]byte, 1)
 			pn, _ := os.Stdin.Read(peek)
 			if pn == 1 && peek[0] == '[' {
-				letter := make([]byte, 1)
-				ln, _ := os.Stdin.Read(letter)
-				if ln == 1 && letter[0] >= 'A' && letter[0] <= 'D' {
-					continue // arrow key: discarded
+				// Consume the rest of the CSI sequence until a final byte
+				// (a letter A-Z or '~'). VMIN=0 means Read returns quickly.
+				for {
+					b := make([]byte, 1)
+					bn, _ := os.Stdin.Read(b)
+					if bn != 1 {
+						break
+					}
+					c := b[0]
+					if (c >= 'A' && c <= 'Z') || c == '~' {
+						break
+					}
 				}
+				continue // CSI sequence discarded
 			}
-			// Bare ESC (or unknown sequence): treat as interrupt.
+			// Bare ESC: treat as interrupt.
 			fmt.Println()
 			interrupt.Store(1)
 			return "", true
@@ -628,7 +637,18 @@ func netplanApply() {
 
 func isNMActive() bool {
 	c := exec.Command("systemctl", "is-active", "--quiet", "NetworkManager")
-	return c.Run() == nil
+	if err := c.Start(); err != nil {
+		return false
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.Wait() }()
+	select {
+	case <-done:
+		return c.ProcessState.Success()
+	case <-time.After(3 * time.Second):
+		c.Process.Kill()
+		return false
+	}
 }
 
 // nicApply applies the current config for dev. For the RHEL backend it relies
