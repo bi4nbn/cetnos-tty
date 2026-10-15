@@ -1430,22 +1430,47 @@ func diskSizeHuman(dev string) string {
 	return fmt.Sprintf("%.1fG", gb)
 }
 
-// diskSlot parses SCSI target id from /sys/class/block/<dev> symlink.
-// On PERC H330 (hpsa) RAID0 single-disk VDs, target id == bay slot.
-func diskSlot(dev string) string {
+// diskSlotMap builds DG→Slot mapping via perccli64.
+// In megaraid_sas, sysfs SCSI target id == VD number == DG number.
+// perccli PD LIST gives DID→DG and EID:Slot; we map DG→Slot.
+func diskSlotMap() map[int]string {
+	tool := "/opt/MegaRAID/perccli/perccli64"
+	if _, err := os.Stat(tool); err != nil {
+		return nil
+	}
+	out, err := run(tool, "/c0/eall/sall", "show")
+	if err != nil {
+		return nil
+	}
+	re := regexp.MustCompile(`^(\d+):(\d+)\s+(\d+)\s+\w+\s+(\d+)`)
+	res := map[int]string{}
+	for _, line := range strings.Split(out, "\n") {
+		m := re.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		dg, _ := strconv.Atoi(m[4])
+		slot, _ := strconv.Atoi(m[2])
+		res[dg] = fmt.Sprintf("Slot %d", slot)
+	}
+	return res
+}
+
+// sysfsTarget returns the SCSI target id for a block device (== VD/DG number).
+func sysfsTarget(dev string) int {
 	link, err := os.Readlink("/sys/class/block/" + dev)
 	if err != nil {
-		return "-"
+		return -1
 	}
 	for _, p := range strings.Split(link, "/") {
 		f := strings.Split(p, ":")
 		if len(f) == 4 {
-			if slot, err := strconv.Atoi(f[2]); err == nil {
-				return fmt.Sprintf("Slot %d", slot)
+			if t, err := strconv.Atoi(f[2]); err == nil {
+				return t
 			}
 		}
 	}
-	return "-"
+	return -1
 }
 
 func showDisks() {
@@ -1462,6 +1487,7 @@ func showDisks() {
 	fmt.Println()
 	fmt.Printf("  %-12s %-6s %-4s %-16s %-6s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
 	fmt.Println("  ------------------------------------------------------------")
+	slotMap := diskSlotMap()
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
 	// nvme0c0n1). Only apply dedup to NVMe devices; RAID virtual disks
@@ -1504,7 +1530,18 @@ func showDisks() {
 		size := diskSizeHuman(dev)
 		dt := diskType(dev)
 		_, model, serial := diskInfo(dev)
-		slot := diskSlot(dev)
+		slot := "-"
+		if t := sysfsTarget(dev); t >= 0 {
+			if slotMap != nil {
+				if s, ok := slotMap[t]; ok {
+					slot = s
+				} else {
+					slot = fmt.Sprintf("Slot %d", t)
+				}
+			} else {
+				slot = fmt.Sprintf("Slot %d", t)
+			}
+		}
 		if len(model) > 16 {
 			model = model[:16]
 		}
