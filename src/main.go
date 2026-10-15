@@ -1453,10 +1453,31 @@ func diskPercMapCache() (map[int]percDiskInfo, bool) {
 	return percCache, percCache != nil
 }
 
+func percToolPath() string {
+	for _, name := range []string{"perccli64", "storcli64", "MegaCli64", "storcli", "MegaCli"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+	for _, p := range []string{
+		"/opt/MegaRAID/perccli/perccli64",
+		"/opt/MegaRAID/storcli/storcli64",
+		"/usr/local/bin/perccli64",
+		"/usr/local/bin/storcli64",
+		"/usr/sbin/perccli64",
+		"/usr/sbin/storcli64",
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
 func diskPercMap() (map[int]percDiskInfo, error) {
-	tool := "/opt/MegaRAID/perccli/perccli64"
-	if _, err := os.Stat(tool); err != nil {
-		return nil, err
+	tool := percToolPath()
+	if tool == "" {
+		return nil, fmt.Errorf("no perccli/storcli found")
 	}
 	out, err := run(tool, "/c0/eall/sall", "show", "all")
 	if err != nil {
