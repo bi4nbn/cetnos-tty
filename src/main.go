@@ -1182,7 +1182,7 @@ func resolveToPhysicalDisks(dev string) []string {
 			continue
 		}
 		// Leaf: if it's a partition, peel off the parent whole disk.
-		if _, err := os.Stat("/sys/block/" + cur + "/partition"); err == nil {
+		if _, err := os.Stat("/sys/class/block/" + cur + "/partition"); err == nil {
 			if link, err := os.Readlink("/sys/class/block/" + cur); err == nil {
 				parent := filepath.Base(filepath.Dir(link))
 				if parent != "" && parent != "." && parent != "/" {
