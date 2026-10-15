@@ -88,7 +88,8 @@ chmod 700 "$SHELL_PATH"
 cat > /usr/local/sbin/login-exit <<'SH'
 #!/bin/bash
 stty sane 2>/dev/null
-su - "$1"
+clear
+/bin/login
 exec /usr/local/sbin/linux-tty
 SH
 chmod 755 /usr/local/sbin/login-exit
