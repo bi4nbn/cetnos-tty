@@ -268,15 +268,19 @@ func ask(prompt string) (string, bool) {
 			interrupt.Store(1)
 			return "", true
 		case 0x1b: // ESC or arrow key escape sequence
-			// Peek for [A/B/C/D (arrow keys) — discard, treat as no-op.
-			// If no follow-up byte arrives quickly, treat as ESC = interrupt.
-			time.Sleep(30 * time.Millisecond)
-			extra := make([]byte, 3)
-			m, _ := os.Stdin.Read(extra)
-			if m >= 3 && extra[0] == '[' && extra[1] >= 'A' && extra[1] <= 'D' {
-				// arrow key: discard, keep reading
-				continue
+			// Arrow keys send ESC [ A/B/C/D. Read one byte; if it is '[',
+			// read the final letter and discard the whole sequence.
+			// VMIN=0/VTIME=2 means Read returns quickly even if no byte follows.
+			peek := make([]byte, 1)
+			pn, _ := os.Stdin.Read(peek)
+			if pn == 1 && peek[0] == '[' {
+				letter := make([]byte, 1)
+				ln, _ := os.Stdin.Read(letter)
+				if ln == 1 && letter[0] >= 'A' && letter[0] <= 'D' {
+					continue // arrow key: discarded
+				}
 			}
+			// Bare ESC (or unknown sequence): treat as interrupt.
 			fmt.Println()
 			interrupt.Store(1)
 			return "", true
