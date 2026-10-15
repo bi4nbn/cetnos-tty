@@ -1618,6 +1618,9 @@ func showDisks() {
 			display = dev + " [SYS]"
 		}
 		size := diskSizeHuman(dev)
+		if size == "" || size == "-" {
+			continue
+		}
 		dt := diskType(dev)
 		_, model, serial := diskInfo(dev)
 		// For sdX behind perccli, override udevadm controller info with
