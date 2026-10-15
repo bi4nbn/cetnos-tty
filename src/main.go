@@ -1460,7 +1460,7 @@ func showDisks() {
 	}
 	fmt.Println("========================== DISKS ===========================")
 	fmt.Println()
-	fmt.Printf("  %-14s %-8s %-5s %-22s %-12s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
+	fmt.Printf("  %-14s %-8s %-5s %-20s %-8s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
 	fmt.Println("  ------------------------------------------------------------------")
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
@@ -1505,14 +1505,14 @@ func showDisks() {
 		dt := diskType(dev)
 		_, model, serial := diskInfo(dev)
 		slot := diskSlot(dev)
-		if len(model) > 22 {
-			model = model[:22]
+		if len(model) > 20 {
+			model = model[:20]
 		}
-		if len(serial) > 18 {
-			serial = serial[:18]
+		if len(serial) > 24 {
+			serial = serial[:24]
 		}
 		shown++
-		fmt.Printf("  %-14s %-8s %-5s %-22s %-12s %s\n", display, size, dt, model, slot, serial)
+		fmt.Printf("  %-14s %-8s %-5s %-20s %-8s %s\n", display, size, dt, model, slot, serial)
 		if shown%10 == 0 && shown < len(deduped) {
 			a, intr := ask("  -- more -- Press Enter for next page (q+Enter to stop): ")
 			if intr {
