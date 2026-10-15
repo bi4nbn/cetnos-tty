@@ -1479,9 +1479,10 @@ func diskPercMap() (map[int]percDiskInfo, error) {
 	tblRe := regexp.MustCompile(`^(\d+):(\d+)\s+\d+\s+\w+\s+(\d+)`)
 	snRe := regexp.MustCompile(`^SN\s*=\s*(\S+)`)
 	modelRe := regexp.MustCompile(`^Model Number\s*=\s*(.+)`)
+	driveRe := regexp.MustCompile(`^Drive /c\d+/e\d+/s\d+\s*:$`)
 	for _, line := range strings.Split(out, "\n") {
 		trim := strings.TrimSpace(line)
-		if strings.HasPrefix(trim, "Drive /c") && strings.HasSuffix(trim, ":") {
+		if driveRe.MatchString(trim) {
 			flush()
 			curDG, curSlot, curSerial, curModel = -1, -1, "", ""
 			continue
