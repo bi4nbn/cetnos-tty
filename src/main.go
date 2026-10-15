@@ -1478,9 +1478,15 @@ func drawMenu() {
 	for _, line := range strings.Split(ipOut, "\n") {
 		f := strings.Fields(line)
 		if len(f) >= 4 {
-			if !seenNic[f[1]] {
-				seenNic[f[1]] = true
-				ips = append(ips, f[1]+"("+f[3]+")")
+			nic := f[1]
+			// Only physical NICs (have /sys/class/net/<nic>/device).
+			// Skips docker0, veth*, br-*, lo, etc.
+			if _, err := os.Stat("/sys/class/net/" + nic + "/device"); err != nil {
+				continue
+			}
+			if !seenNic[nic] {
+				seenNic[nic] = true
+				ips = append(ips, nic+"("+f[3]+")")
 			}
 		}
 	}
