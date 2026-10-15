@@ -102,7 +102,6 @@ sysctl -w kernel.sysrq=0 2>/dev/null || true
 # reload and start
 systemctl daemon-reload
 systemctl enable linux-tty@tty1.service
-systemctl stop getty@tty1.service 2>/dev/null || true
 systemctl restart linux-tty@tty1.service
 
 echo ""
