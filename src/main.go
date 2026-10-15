@@ -1840,7 +1840,13 @@ func drawMenu() {
 	}
 	kernel := readFileTrim("/proc/sys/kernel/osrelease")
 
-	w := 160
+	w := 80
+	if _, cols, err := getTTYSize(); err == nil && cols > 0 {
+		w = cols - 2
+		if w < 60 {
+			w = 60
+		}
+	}
 	// Truncate into a LOCAL title so we never mutate the global `rel` across
 	// redraws.
 	title := rel
