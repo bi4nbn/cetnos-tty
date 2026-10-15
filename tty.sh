@@ -44,7 +44,7 @@ Conflicts=getty@%i.service linux-root@%i.service
 Environment=LANG=en_US.UTF-8
 ExecStart=/usr/local/sbin/linux-tty
 Restart=always
-RestartSec=1
+RestartSec=0
 StandardInput=tty
 StandardOutput=tty
 StandardError=tty
