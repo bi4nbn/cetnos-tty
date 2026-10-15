@@ -1164,43 +1164,55 @@ func resolveToDisk(dev string) string {
 	return dev
 }
 
-// systemDisks reads /proc/mounts to find which whole disks host /, /boot,
-// /boot/efi, or swap. Resolves LVM/mapper devices via /sys/block/dm-*/slaves.
+// systemDisks finds which whole disks host the root filesystem, /boot,
+// /boot/efi, and swap. Uses lsblk -no PKNAME as the primary method
+// (works correctly with RAID/LVM/multipath), falls back to /proc/mounts.
 func systemDisks() []string {
 	disks := map[string]bool{}
-	data, err := os.ReadFile("/proc/mounts")
-	if err != nil {
-		return nil
+
+	// Primary: lsblk -no PKNAME / gives the parent disk of the root mount.
+	// e.g. "sda" whether / is on sda2, LVM, or dm-raid.
+	if out, err := run("lsblk", "-no", "PKNAME", "/"); err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			d := strings.TrimSpace(line)
+			if d != "" {
+				disks[d] = true
+			}
+		}
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		device, mountPoint, fsType := fields[0], fields[1], fields[2]
-		if mountPoint != "/" && mountPoint != "/boot" && mountPoint != "/boot/efi" && fsType != "swap" {
-			continue
-		}
-		devName := strings.TrimPrefix(device, "/dev/")
-		if strings.HasPrefix(devName, "mapper/") {
-			target := strings.TrimPrefix(devName, "mapper/")
-			dmEntries, _ := os.ReadDir("/sys/block/")
-			for _, dm := range dmEntries {
-				if !strings.HasPrefix(dm.Name(), "dm-") {
-					continue
-				}
-				dmName := readFileTrim("/sys/block/" + dm.Name() + "/dm/name")
-				if dmName == target {
-					slaves, _ := os.ReadDir("/sys/block/" + dm.Name() + "/slaves/")
-					for _, s := range slaves {
-						disks[resolveToDisk(s.Name())] = true
-					}
+
+	// Also add /boot and /boot/efi parents via lsblk.
+	for _, mp := range []string{"/boot", "/boot/efi"} {
+		if out, err := run("lsblk", "-no", "PKNAME", mp); err == nil {
+			for _, line := range strings.Split(out, "\n") {
+				d := strings.TrimSpace(line)
+				if d != "" {
+					disks[d] = true
 				}
 			}
-		} else {
+		}
+	}
+
+	// Fallback: /proc/mounts parsing if lsblk returned nothing.
+	if len(disks) == 0 {
+		data, err := os.ReadFile("/proc/mounts")
+		if err != nil {
+			return nil
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 3 {
+				continue
+			}
+			device, mountPoint := fields[0], fields[1]
+			if mountPoint != "/" && mountPoint != "/boot" && mountPoint != "/boot/efi" {
+				continue
+			}
+			devName := strings.TrimPrefix(device, "/dev/")
 			disks[resolveToDisk(devName)] = true
 		}
 	}
+
 	var res []string
 	for d := range disks {
 		res = append(res, d)
