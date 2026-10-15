@@ -87,6 +87,7 @@ chmod 700 "$SHELL_PATH"
 # login-exit script (option 7: normal login, return to menu on logout)
 cat > /usr/local/sbin/login-exit <<'SH'
 #!/bin/bash
+stty sane 2>/dev/null
 /bin/login "$1"
 exec /usr/local/sbin/linux-tty
 SH

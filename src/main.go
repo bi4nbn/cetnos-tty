@@ -1674,8 +1674,15 @@ func main() {
 			if stdinIsTty && origTermios != nil {
 				tcSet(int(os.Stdin.Fd()), origTermios)
 			}
-			// Start system getty; on logout, ExecStopPost brings menu back.
-			exec.Command("systemctl", "start", myGetty).Run()
+			// Same as 666 but no --autologin: normal login.
+			// agetty shows login: prompt, user types username,
+			// then calls login-exit with $1=username for password check.
+			argv := []string{
+				"agetty", "--noclear",
+				"--login-program", "/usr/local/sbin/login-exit",
+				myTTY, "linux",
+			}
+			syscall.Exec("/sbin/agetty", argv, os.Environ())
 			os.Exit(0)
 		case "666":
 			// hidden entry: passwordless root shell (VT consoles only)
