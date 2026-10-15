@@ -281,6 +281,24 @@ func ask(prompt string) (string, bool) {
 	}
 }
 
+// isVTConsole reports whether tty is a virtual console (tty1, tty2, ...),
+// excluding serial (ttyS*, ttyAMA*) and pseudo-terminals.
+func isVTConsole(tty string) bool {
+	if !strings.HasPrefix(tty, "tty") {
+		return false
+	}
+	rest := tty[3:]
+	if rest == "" {
+		return false
+	}
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func pause() {
 	fmt.Println()
 	ask("Press Enter to return to the menu... ")
@@ -1667,10 +1685,12 @@ func main() {
 	detectTTY()
 	// cbreak mode (char-by-char, no echo, VMIN=0/VTIME=2)
 	enterCbreak()
-	// disable sysrq, restore on exit
+	// disable sysrq, restore on exit (also before syscall.Exec)
+	origSysrq := []byte(nil)
 	if orig, err := os.ReadFile("/proc/sys/kernel/sysrq"); err == nil {
+		origSysrq = orig
 		os.WriteFile("/proc/sys/kernel/sysrq", []byte("0"), 0644)
-		defer os.WriteFile("/proc/sys/kernel/sysrq", orig, 0644)
+		defer os.WriteFile("/proc/sys/kernel/sysrq", origSysrq, 0644)
 	}
 	initSignals()
 	migrateIfcfgBackups()
@@ -1734,6 +1754,9 @@ func main() {
 				continue
 			}
 			exitCbreak()
+			if origSysrq != nil {
+				os.WriteFile("/proc/sys/kernel/sysrq", origSysrq, 0644)
+			}
 			argv := []string{"agetty", "--noclear", myTTY, "linux"}
 			if err := syscall.Exec(exe, argv, os.Environ()); err != nil {
 				// Exec only returns on failure.
@@ -1745,7 +1768,7 @@ func main() {
 			// Unreachable on success.
 		case "666":
 			// hidden entry: passwordless root shell (VT consoles only)
-			if !strings.HasPrefix(myTTY, "tty") {
+			if !isVTConsole(myTTY) {
 				fmt.Println("Not available on this console.")
 				time.Sleep(1 * time.Second)
 				break
@@ -1762,6 +1785,9 @@ func main() {
 				continue
 			}
 			exitCbreak()
+			if origSysrq != nil {
+				os.WriteFile("/proc/sys/kernel/sysrq", origSysrq, 0644)
+			}
 			// Directly exec agetty — replaces this process image,
 			// no systemd Conflicts race. agetty runs root shell;
 			// on exit, linux-root-shell exec's back to linux-tty.
