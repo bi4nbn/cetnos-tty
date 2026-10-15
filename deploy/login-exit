@@ -1,5 +1,4 @@
 #!/bin/bash
-# login-exit: used by agetty --login-program for menu option 7.
-# Runs the normal login shell; when user logs out, exec back to linux-tty.
+# login-exit: normal login, then return to linux-tty menu on logout.
 /usr/bin/login
 exec /usr/local/sbin/linux-tty
