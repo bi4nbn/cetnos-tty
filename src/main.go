@@ -1581,6 +1581,14 @@ func drawMenu() {
 	}
 	host, _ := os.Hostname()
 	sockets, model := cpuInfo()
+	threads := 0
+	if b, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "processor") {
+				threads++
+			}
+		}
+	}
 	kernel := readFileTrim("/proc/sys/kernel/osrelease")
 
 	const w = 72
@@ -1600,7 +1608,7 @@ func drawMenu() {
 	}
 	fmt.Printf("%s %s %s\n", strings.Repeat("=", tp), title, strings.Repeat("=", right))
 	fmt.Printf(" Hostname : %s\n", host)
-	fmt.Printf(" CPU      : %s x %s\n", sockets, model)
+	fmt.Printf(" CPU      : %s x %s (%d threads)\n", sockets, model, threads)
 	fmt.Printf(" Memory   : %s\n", mem)
 	fmt.Printf(" Kernel   : %-26s Boot : %s\n", kernel, boot)
 	fmt.Printf(" Version  : %s\n", version)
