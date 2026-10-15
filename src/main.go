@@ -27,23 +27,21 @@ import (
 // ---------- globals ----------
 
 var (
-	rel        = "SSCLOUD Linux-TTY Console"
-	myTTY      string // e.g. tty1 / ttyS0
-	myGetty    string // e.g. getty@tty1.service / serial-getty@ttyS0.service
-	leaving    atomic.Int32
-	interrupt  atomic.Int32
-	nmActive   atomic.Int32
-	stdinIsTty = false
-	eofFlag    atomic.Bool
+	rel         = "SSCLOUD Linux-TTY Console"
+	myTTY       string // e.g. tty1 / ttyS0
+	interrupt   atomic.Int32
+	nmActive    atomic.Int32
+	stdinIsTty  = false
+	eofFlag     atomic.Bool
 	origTermios *termios
-	netBackend = "rhel" // "rhel" = ifcfg+nmcli, "debian" = /etc/network/interfaces
+	netBackend  = "rhel" // "rhel" = ifcfg+nmcli, "debian" = /etc/network/interfaces, "netplan" = /etc/netplan
 )
 
 const (
-	ifcfgDir     = "/etc/sysconfig/network-scripts"
-	bakDir       = "/var/backups/netcfg"
-	maxTries     = 3
-	interfacesF  = "/etc/network/interfaces"
+	ifcfgDir    = "/etc/sysconfig/network-scripts"
+	bakDir      = "/var/backups/netcfg"
+	maxTries    = 3
+	interfacesF = "/etc/network/interfaces"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=vX.Y.Z"
@@ -78,6 +76,36 @@ func tcSet(fd int, t *termios) error {
 	return nil
 }
 
+// enterCbreak puts stdin into cbreak mode: no ICANON (char-by-char), no ECHO
+// (ask() does its own echoing), VMIN=0 + VTIME=2 so Read() returns after 200ms
+// even with no input. Saves the original termios on first call.
+func enterCbreak() {
+	if !stdinIsTty {
+		return
+	}
+	fd := int(os.Stdin.Fd())
+	if origTermios == nil {
+		t, err := tcGet(fd)
+		if err != nil {
+			return
+		}
+		origTermios = t
+	}
+	t := *origTermios
+	t.Lflag &^= syscall.ICANON
+	t.Lflag &^= syscall.ECHO
+	t.Cc[5] = 2 // VTIME = 2 deciseconds = 200ms
+	t.Cc[6] = 0 // VMIN = 0
+	tcSet(fd, &t)
+}
+
+// exitCbreak restores the original termios.
+func exitCbreak() {
+	if stdinIsTty && origTermios != nil {
+		tcSet(int(os.Stdin.Fd()), origTermios)
+	}
+}
+
 // ---------- small helpers ----------
 
 func run(name string, args ...string) (string, error) {
@@ -87,11 +115,6 @@ func run(name string, args ...string) (string, error) {
 	c.Stderr = &b
 	err := c.Run()
 	return strings.TrimSpace(b.String()), err
-}
-
-func runOut(name string, args ...string) string {
-	out, _ := run(name, args...)
-	return out
 }
 
 // runBg runs a command and streams its stdout to our stdout (used by ping).
@@ -133,10 +156,7 @@ func initSignals() {
 			if s == os.Interrupt {
 				interrupt.Store(1)
 			} else if s == syscall.SIGTERM {
-				leaving.Store(1)
-				if stdinIsTty && origTermios != nil {
-					tcSet(int(os.Stdin.Fd()), origTermios)
-				}
+				exitCbreak()
 				os.Exit(143)
 			}
 		}
@@ -162,14 +182,6 @@ func detectTTY() {
 		out = strings.TrimSpace(b.String())
 	}
 	myTTY = strings.TrimPrefix(out, "/dev/")
-	switch {
-	case strings.HasPrefix(myTTY, "ttyS"), strings.HasPrefix(myTTY, "ttyAMA"):
-		myGetty = "serial-getty@" + myTTY + ".service"
-	case regexp.MustCompile(`^tty[0-9]`).MatchString(myTTY):
-		myGetty = "getty@" + myTTY + ".service"
-	default:
-		myGetty = ""
-	}
 }
 
 // ---------- migrate old ifcfg backups ----------
@@ -218,8 +230,8 @@ func migrateIfcfgBackups() {
 }
 
 // ---------- ask(): char-by-char line editor ----------
-// returns (value, interrupted)
 
+// returns (value, interrupted)
 func ask(prompt string) (string, bool) {
 	fmt.Print(prompt)
 	var buf []byte
@@ -322,7 +334,12 @@ func nicOperstate(nic string) string {
 
 // detectDistro reads /etc/os-release and sets netBackend.
 // RHEL family (centos/rhel/rocky/almalinux/fedora) -> "rhel"
-// Debian family (debian/ubuntu/kali) -> "debian"
+// Debian family (debian/ubuntu/kali) -> "debian" or "netplan"
+//
+// A netplan backend is only selected when /etc/netplan contains a YAML with
+// an actual interface block (ethernets/bonds/bridges/vlans). Stub files with
+// only "version: 2" are ignored, avoiding a conflict with traditional
+// /etc/network/interfaces on Debian/Ubuntu systems that ship both.
 func detectDistro() {
 	data, err := os.ReadFile("/etc/os-release")
 	if err != nil {
@@ -343,17 +360,27 @@ func detectDistro() {
 	// Debian family
 	for _, d := range []string{"debian", "ubuntu", "kali"} {
 		if strings.Contains(combined, d) {
-			// Debian family: pick netplan if /etc/netplan has yaml files,
-			// otherwise fall back to traditional /etc/network/interfaces.
+			netBackend = "debian"
 			if entries, err := os.ReadDir("/etc/netplan"); err == nil {
 				for _, e := range entries {
-					if strings.HasSuffix(e.Name(), ".yaml") || strings.HasSuffix(e.Name(), ".yml") {
+					name := e.Name()
+					if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
+						continue
+					}
+					b, err := os.ReadFile(filepath.Join("/etc/netplan", name))
+					if err != nil {
+						continue
+					}
+					text := string(b)
+					if strings.Contains(text, "ethernets:") ||
+						strings.Contains(text, "bonds:") ||
+						strings.Contains(text, "bridges:") ||
+						strings.Contains(text, "vlans:") {
 						netBackend = "netplan"
 						return
 					}
 				}
 			}
-			netBackend = "debian"
 			return
 		}
 	}
@@ -382,7 +409,6 @@ func debianRewriteBlock(nic, block string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-
 	// Walk existing lines, drop old auto/allow-hotplug entries mentioning nic,
 	// and drop the entire iface <nic> stanza (including indented child lines).
 	var kept []string
@@ -390,7 +416,6 @@ func debianRewriteBlock(nic, block string) error {
 		line := existing[i]
 		trimmed := strings.TrimSpace(line)
 		fields := strings.Fields(trimmed)
-
 		if len(fields) >= 2 && (fields[0] == "auto" || fields[0] == "allow-hotplug") {
 			var remain []string
 			for _, name := range fields[1:] {
@@ -413,7 +438,6 @@ func debianRewriteBlock(nic, block string) error {
 		}
 		kept = append(kept, line)
 	}
-
 	// Ensure loopback stanza exists
 	hasLo := false
 	for _, l := range kept {
@@ -425,10 +449,8 @@ func debianRewriteBlock(nic, block string) error {
 	if !hasLo {
 		kept = append([]string{"auto lo", "iface lo inet loopback", ""}, kept...)
 	}
-
 	// Append new block
 	kept = append(kept, "", block)
-
 	// Collapse 3+ consecutive blank lines into one
 	var out []string
 	blank := false
@@ -447,7 +469,6 @@ func debianRewriteBlock(nic, block string) error {
 	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
 		out = out[:len(out)-1]
 	}
-
 	final := strings.Join(out, "\n") + "\n"
 	return os.WriteFile(interfacesF, []byte(final), 0644)
 }
@@ -479,10 +500,17 @@ func debianWriteDHCP(nic string) error {
 }
 
 // debianApply brings the NIC up/down after writing the config.
+// Polls operstate to avoid a fixed sleep.
 func debianApply(nic string) {
-	// Try ifdown/ifup first; fall back to systemctl restart networking.
 	exec.Command("ifdown", nic).Run()
-	time.Sleep(500 * time.Millisecond)
+	// Wait for link to go down (max ~3s)
+	for i := 0; i < 15; i++ {
+		st := readFileTrim("/sys/class/net/" + nic + "/operstate")
+		if st == "down" || st == "unknown" || st == "" {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 	if err := exec.Command("ifup", nic).Run(); err != nil {
 		// ifup may be missing on newer Debian/Ubuntu (netplan era)
 		exec.Command("systemctl", "restart", "networking").Run()
@@ -519,10 +547,10 @@ func netplanBackup() string {
 func netplanWriteStatic(nic, ip, netmask, gateway, dns1, dns2 string) error {
 	ones := maskSize(net.ParseIP(netmask).To4())
 	prefix := strconv.Itoa(ones)
-	yaml := "network:\n  version: 2\n  ethernets:\n    " + nic + ":\n" +
+	yaml := "network:\n  version: 2\n  renderer: networkd\n  ethernets:\n    " + nic + ":\n" +
 		"      addresses: [" + ip + "/" + prefix + "]\n"
 	if gateway != "" {
-		yaml += "      routes:\n        - to: 0.0.0.0/0\n          via: " + gateway + "\n"
+		yaml += "      routes:\n        - to: 0.0.0.0/0\n          via: " + gateway + "\n          on-link: true\n"
 	}
 	if dns1 != "" {
 		dnsList := dns1
@@ -536,7 +564,7 @@ func netplanWriteStatic(nic, ip, netmask, gateway, dns1, dns2 string) error {
 
 // netplanWriteDHCP writes a DHCP netplan YAML and applies it.
 func netplanWriteDHCP(nic string) error {
-	yaml := "network:\n  version: 2\n  ethernets:\n    " + nic + ":\n" +
+	yaml := "network:\n  version: 2\n  renderer: networkd\n  ethernets:\n    " + nic + ":\n" +
 		"      dhcp4: true\n"
 	return os.WriteFile(netplanConfigPath, []byte(yaml), 0600)
 }
@@ -667,7 +695,10 @@ func applyNic(dev, bak string) {
 			fmt.Printf(" (backup: %s)", bak)
 		}
 		fmt.Println()
-	} else {
+		return
+	}
+	// Has an IPv4 but is not "fully ready". Explain per backend.
+	if netBackend == "rhel" && isNMActive() {
 		st, _ := run("nmcli", "-t", "-f", "DEVICE,STATE", "dev", "status")
 		stt := "unknown"
 		for _, line := range strings.Split(st, "\n") {
@@ -678,11 +709,13 @@ func applyNic(dev, bak string) {
 			}
 		}
 		fmt.Printf("FAILED: %s has %s but NetworkManager state is '%s' after %d attempt(s)", dev, addr, stt, maxTries)
-		if bak != "" {
-			fmt.Printf(" (backup: %s)", bak)
-		}
-		fmt.Println()
+	} else {
+		fmt.Printf("FAILED: %s has %s but the interface is not fully ready after %d attempt(s)", dev, addr, maxTries)
 	}
+	if bak != "" {
+		fmt.Printf(" (backup: %s)", bak)
+	}
+	fmt.Println()
 }
 
 // ---------- static IP (formerly ip.sh) ----------
@@ -703,7 +736,6 @@ func staticConfig() {
 	for i, n := range nics {
 		fmt.Printf("  %d. %-16s link=%s\n", i+1, n, nicOperstate(n))
 	}
-
 	// choose NIC
 	sel, intr := ask("Select interface number: ")
 	if intr {
@@ -716,7 +748,6 @@ func staticConfig() {
 		return
 	}
 	nic := nics[n-1]
-
 	// RHEL backend requires an existing ifcfg file; Debian backend writes
 	// /etc/network/interfaces regardless of pre-existing config.
 	cfg := filepath.Join(ifcfgDir, "ifcfg-"+nic)
@@ -736,7 +767,6 @@ func staticConfig() {
 			return
 		}
 	}
-
 	// IP/CIDR input
 	var ipAddr, netmask string
 	ipOK := false
@@ -778,7 +808,6 @@ func staticConfig() {
 		fmt.Println("ERROR: too many invalid inputs - nothing has been changed.")
 		return
 	}
-
 	// ask mask if not given
 	if netmask == "" {
 		got := false
@@ -807,7 +836,6 @@ func staticConfig() {
 			return
 		}
 	}
-
 	// gateway suggestion = network+1
 	ip := net.ParseIP(ipAddr).To4()
 	mask := net.ParseIP(netmask).To4()
@@ -820,7 +848,6 @@ func staticConfig() {
 	} else {
 		fmt.Printf("NOTE: /%d has no usable host address - no gateway is suggested.\n", prefix)
 	}
-
 	gateway := ""
 	gwOK := false
 	for t := 0; t < maxTries && !gwOK; t++ {
@@ -875,7 +902,6 @@ func staticConfig() {
 			fmt.Printf("WARNING: gateway %s is not in %s/%s - the default route may not work.\n", gateway, ipAddr, netmask)
 		}
 	}
-
 	// DNS: preserve existing
 	existingDNS := []string{}
 	if rc, _ := os.ReadFile("/etc/resolv.conf"); rc == nil {
@@ -919,7 +945,6 @@ func staticConfig() {
 	} else {
 		dnsBlock = "PEERDNS=yes\nDNS1=223.6.6.6\nDNS2=223.5.5.5"
 	}
-
 	// backup
 	os.MkdirAll(bakDir, 0700)
 	bak := ""
@@ -934,7 +959,6 @@ func staticConfig() {
 	case "netplan":
 		bak = netplanBackup()
 	}
-
 	// write config per backend
 	switch netBackend {
 	case "rhel":
@@ -977,9 +1001,7 @@ func staticConfig() {
 		}
 		fmt.Printf("Wrote static config to %s\n", netplanConfigPath)
 	}
-
 	applyNic(nic, bak)
-
 	// quick ping
 	pingTarget := gateway
 	if pingTarget == "" {
@@ -1072,7 +1094,6 @@ func dhcpConfig() {
 	nic := nics[n-1]
 	cfg := filepath.Join(ifcfgDir, "ifcfg-"+nic)
 	bak := ""
-
 	switch netBackend {
 	case "rhel":
 		if fileExists(cfg) {
@@ -1124,33 +1145,34 @@ func pingTest() {
 
 // ---------- disks ----------
 
-// resolveToDisk takes a block device name (e.g. sda4, dm-0) and returns the
-// whole-disk name (e.g. sda). Uses /sys/block directly, no lsblk needed.
-func resolveToDisk(dev string) string {
-	// If this is a partition (has /sys/block/<dev>/partition attribute),
-	// resolve it back to its parent whole disk.
-	if _, err := os.Stat("/sys/block/" + dev + "/partition"); err == nil {
-		entries, err := os.ReadDir("/sys/block/")
-		if err != nil {
-			return dev
+// resolveToPhysicalDisk walks up /sys/class/block/<dev>/slaves/ recursively,
+// following LVM, dm-crypt, md, and multipath stacks, then peels off a trailing
+// partition to yield the whole disk name (sda, nvme0n1, ...).
+func resolveToPhysicalDisk(dev string) string {
+	// Walk up through slaves
+	for i := 0; i < 16; i++ {
+		entries, err := os.ReadDir("/sys/class/block/" + dev + "/slaves")
+		if err != nil || len(entries) == 0 {
+			break
 		}
-		for _, e := range entries {
-			if e.Name() == dev {
-				continue
-			}
-			if _, err := os.Stat("/sys/block/" + e.Name() + "/" + dev); err == nil {
-				return e.Name()
+		dev = entries[0].Name()
+	}
+	// If we ended on a partition, walk up to the whole disk:
+	// /sys/class/block/sda1 -> .../block/sda/sda1 -> parent dir sda
+	if _, err := os.Stat("/sys/block/" + dev + "/partition"); err == nil {
+		if link, err := os.Readlink("/sys/class/block/" + dev); err == nil {
+			parent := filepath.Base(filepath.Dir(link))
+			if parent != "" && parent != "." && parent != "/" {
+				dev = parent
 			}
 		}
 	}
-	// Whole disk.
 	return dev
 }
 
-// systemDisks finds which whole disks host the root filesystem, /boot,
-// /boot/efi, and swap. Reads /proc/mounts to find the device mounted on
-// "/", then uses lsblk -no PKNAME /dev/<dev> to resolve to the whole disk
-// (works through LVM, dm, RAID, multipath).
+// systemDisks finds which whole disks host the root filesystem, /boot, and
+// /boot/efi. Uses /proc/mounts plus /sys/class/block to resolve the underlying
+// physical disk without depending on lsblk.
 func systemDisks() []string {
 	disks := map[string]bool{}
 	data, err := os.ReadFile("/proc/mounts")
@@ -1159,26 +1181,26 @@ func systemDisks() []string {
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 3 {
+		if len(fields) < 2 {
 			continue
 		}
 		device, mountPoint := fields[0], fields[1]
 		if mountPoint != "/" && mountPoint != "/boot" && mountPoint != "/boot/efi" {
 			continue
 		}
-		devName := strings.TrimPrefix(device, "/dev/")
-		// Use lsblk to resolve the whole disk behind this device,
-		// whether it's a partition, LVM, dm-raid, or multipath.
-		if out, err := run("lsblk", "-no", "PKNAME", "/dev/"+devName); err == nil {
-			for _, d := range strings.Split(out, "\n") {
-				d = strings.TrimSpace(d)
-				if d != "" {
-					disks[d] = true
-				}
+		if !strings.HasPrefix(device, "/dev/") {
+			continue // overlay / tmpfs / nfs etc.
+		}
+		name := strings.TrimPrefix(device, "/dev/")
+		// /dev/mapper/vg-root -> dm-0
+		if strings.HasPrefix(name, "mapper/") {
+			if link, err := os.Readlink("/dev/" + name); err == nil {
+				name = filepath.Base(link)
 			}
-		} else {
-			// fallback: manual resolution
-			disks[resolveToDisk(devName)] = true
+		}
+		phys := resolveToPhysicalDisk(name)
+		if phys != "" {
+			disks[phys] = true
 		}
 	}
 	var res []string
@@ -1223,13 +1245,13 @@ func diskInfo(dev string) (bus, model, serial string) {
 		}
 	}
 	// RAID virtual disks (PERC/H700 etc) expose ID_SERIAL as
-	// "controllerSerial_virtual/path" e.g. "6509a4c0afca2_data_hdd/storage1_hdd".
-	// Strip the trailing virtual-disk path after the first underscore.
-	if idx := strings.Index(serial, "_data_hdd/"); idx > 0 {
-		serial = serial[:idx]
-	} else if idx := strings.Index(serial, "_"); idx > 0 {
-		// generic: keep up to first underscore
-		serial = serial[:idx]
+	// "controllerSerial_virtual/path" — e.g. "6509a4c0afca2_data_hdd/storage1_hdd".
+	// Only strip the trailing virtual-disk path when '/' is present (a virtual
+	// separator); normal SATA/NVMe serials (Samsung_SSD_870_...) never contain '/'.
+	if strings.Contains(serial, "/") {
+		if idx := strings.Index(serial, "_"); idx > 0 {
+			serial = serial[:idx]
+		}
 	}
 	if serial == "" {
 		serial = readFileTrim("/sys/block/" + dev + "/device/serial")
@@ -1308,14 +1330,14 @@ func showDisks() {
 		sysSet[d] = true
 	}
 	if len(syslist) == 0 {
-		fmt.Println("WARNING: unable to identify system disk (/)")
+		fmt.Println("WARNING: unable to identify system disk (/) - the list below")
+		fmt.Println("         may include the disk hosting the OS.")
 	}
 	disks := dataDisks(sysSet)
 	fmt.Println("========================= DATA DISKS =========================")
 	fmt.Println()
 	fmt.Printf("  %-9s %-8s %-5s %-5s %-22s %s\n", "DEV", "SIZE", "TYPE", "BUS", "MODEL", "SERIAL")
 	fmt.Println("  --------------------------------------------------------------")
-
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
 	// nvme0c0n1). Only apply dedup to NVMe devices; RAID virtual disks
@@ -1348,7 +1370,6 @@ func showDisks() {
 		chosen[key] = dev
 		deduped = append(deduped, dev)
 	}
-
 	shown := 0
 	for _, dev := range deduped {
 		size := diskSizeHuman(dev)
@@ -1427,10 +1448,17 @@ func cpuInfo() (sockets, model string) {
 	return
 }
 
+// ipEntry is one line of "ip -o addr show" we want to display.
+type ipEntry struct {
+	nic string
+	ip  string
+	v6  bool
+}
+
 func drawMenu() {
 	fmt.Print("\033[2J\033[H")
 	ipOut, _ := run("ip", "-o", "addr", "show", "scope", "global")
-	var ips []string
+	var entries []ipEntry
 	seen := map[string]bool{}
 	for _, line := range strings.Split(ipOut, "\n") {
 		f := strings.Fields(line)
@@ -1447,13 +1475,21 @@ func drawMenu() {
 			continue
 		}
 		seen[key] = true
-		if f[2] == "inet6" {
-			// IPv6: extra space before for visual separation
-			ips = append(ips, "  ("+ip+")")
-		} else {
-			// IPv4: nic(address)
-			ips = append(ips, nic+"("+ip+")")
+		entries = append(entries, ipEntry{nic: nic, ip: ip, v6: f[2] == "inet6"})
+	}
+	// Stable order: by NIC, then IPv4 before IPv6, then by address string.
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].nic != entries[j].nic {
+			return entries[i].nic < entries[j].nic
 		}
+		if entries[i].v6 != entries[j].v6 {
+			return !entries[i].v6
+		}
+		return entries[i].ip < entries[j].ip
+	})
+	var ips []string
+	for _, e := range entries {
+		ips = append(ips, e.nic+"("+e.ip+")")
 	}
 	ipStr := strings.Join(ips, " ")
 	if ipStr == "" {
@@ -1488,6 +1524,11 @@ func drawMenu() {
 	kernel := readFileTrim("/proc/sys/kernel/osrelease")
 
 	const w = 72
+	// Guard against a long /etc/linux-tty-release: truncate so the header
+	// always fits inside the menu width.
+	if len(rel) > w-4 {
+		rel = rel[:w-4]
+	}
 	tp := (w - len(rel) - 2) / 2
 	if tp < 0 {
 		tp = 0
@@ -1520,21 +1561,17 @@ func drawMenu() {
 func main() {
 	// clear screen on startup
 	fmt.Print("\033[2J\033[H")
-
 	// root check
 	if os.Geteuid() != 0 {
 		fmt.Println("ERROR: this menu must run as root.")
 		time.Sleep(3 * time.Second)
 		os.Exit(1)
 	}
-
 	detectDistro()
-
 	rel = readFileTrim("/etc/linux-tty-release")
 	if rel == "" {
 		rel = "SSCLOUD Linux-TTY Console"
 	}
-
 	// TERM fallback
 	term := os.Getenv("TERM")
 	switch term {
@@ -1554,46 +1591,24 @@ func main() {
 	} else {
 		os.Setenv("TERM", "vt100")
 	}
-
 	// detect if stdin is a tty
 	if fi, err := os.Stdin.Stat(); err == nil && (fi.Mode()&os.ModeCharDevice) != 0 {
 		stdinIsTty = true
 	}
-
 	detectTTY()
-
-	// cbreak mode: turn off ICANON (char-by-char) and ECHO (ask() does its own echo)
-	// Also set VMIN=0, VTIME=2: Read() returns after 200ms even with no data.
-	if stdinIsTty {
-		fd := int(os.Stdin.Fd())
-		if t, err := tcGet(fd); err == nil {
-			origTermios = t
-			t.Lflag &^= syscall.ICANON
-			t.Lflag &^= syscall.ECHO
-			t.Cc[5] = 2  // VTIME = 2 deciseconds = 200ms
-			t.Cc[6] = 0  // VMIN = 0
-			tcSet(fd, t)
-		}
-	}
-
+	// cbreak mode (char-by-char, no echo, VMIN=0/VTIME=2)
+	enterCbreak()
 	// disable sysrq
 	os.WriteFile("/proc/sys/kernel/sysrq", []byte("0"), 0644)
-
 	initSignals()
 	migrateIfcfgBackups()
-
-	// defer restore terminal on exit
-	defer func() {
-		if stdinIsTty && origTermios != nil {
-			tcSet(int(os.Stdin.Fd()), origTermios)
-		}
-	}()
+	// restore terminal on exit
+	defer exitCbreak()
 
 	for {
 		drawMenu()
 		choice, intr := ask("Select [1-7]: ")
 		if eofFlag.Load() {
-			leaving.Store(1)
 			return
 		}
 		if intr {
@@ -1619,58 +1634,70 @@ func main() {
 			if confirm("Reboot now?") {
 				fmt.Println("Rebooting ...")
 				syscall.Sync()
-				exec.Command("reboot").Run()
+				if err := exec.Command("reboot").Run(); err != nil {
+					fmt.Printf("ERROR: reboot failed: %v\n", err)
+					pause()
+					continue
+				}
 				time.Sleep(10 * time.Second)
 			}
 		case "6":
 			if confirm("Power off now?") {
 				fmt.Println("Powering off ...")
 				syscall.Sync()
-				exec.Command("poweroff").Run()
+				if err := exec.Command("poweroff").Run(); err != nil {
+					fmt.Printf("ERROR: poweroff failed: %v\n", err)
+					pause()
+					continue
+				}
 				time.Sleep(10 * time.Second)
 			}
 		case "7":
-			leaving.Store(1)
-			// restore terminal to normal mode
-			if stdinIsTty && origTermios != nil {
-				tcSet(int(os.Stdin.Fd()), origTermios)
-			}
-			// Jump to system's normal agetty login prompt.
+			// Resolve agetty FIRST, so a missing binary does not leave us in
+			// canonical mode with no way to get back to cbreak.
 			exe, err := exec.LookPath("agetty")
 			if err != nil {
-				fmt.Println("ERROR: agetty not found")
-				time.Sleep(2 * time.Second)
-				leaving.Store(0)
+				fmt.Println("ERROR: agetty not found - cannot drop to login prompt.")
+				pause()
 				continue
 			}
+			exitCbreak()
 			argv := []string{"agetty", "--noclear", myTTY, "linux"}
-			syscall.Exec(exe, argv, os.Environ())
-			os.Exit(1)
+			if err := syscall.Exec(exe, argv, os.Environ()); err != nil {
+				// Exec only returns on failure.
+				fmt.Printf("ERROR: exec agetty: %v\n", err)
+				enterCbreak()
+				pause()
+				continue
+			}
+			// Unreachable on success.
 		case "666":
 			// hidden entry: passwordless root shell (VT consoles only)
-			if regexp.MustCompile(`^tty[0-9]`).MatchString(myTTY) {
-				leaving.Store(1)
-				if stdinIsTty && origTermios != nil {
-					tcSet(int(os.Stdin.Fd()), origTermios)
-				}
-				// Directly exec agetty — replaces this process image,
-				// no systemd Conflicts race. agetty runs root shell;
-				// on exit, linux-root-shell exec's back to linux-tty.
-				argv := []string{
-					"agetty", "--autologin", "root",
-					"--login-program", "/usr/local/sbin/linux-root-shell",
-					"--noclear", myTTY, "linux",
-				}
-				exe, err := exec.LookPath("agetty")
-				if err != nil {
-					fmt.Println("ERROR: agetty not found")
-					time.Sleep(2 * time.Second)
-					leaving.Store(0)
-					continue
-				}
-				syscall.Exec(exe, argv, os.Environ())
-				os.Exit(1)
+			if !regexp.MustCompile(`^tty[0-9]`).MatchString(myTTY) {
+				continue
 			}
+			exe, err := exec.LookPath("agetty")
+			if err != nil {
+				fmt.Println("ERROR: agetty not found - cannot drop to root shell.")
+				pause()
+				continue
+			}
+			exitCbreak()
+			// Directly exec agetty — replaces this process image,
+			// no systemd Conflicts race. agetty runs root shell;
+			// on exit, linux-root-shell exec's back to linux-tty.
+			argv := []string{
+				"agetty", "--autologin", "root",
+				"--login-program", "/usr/local/sbin/linux-root-shell",
+				"--noclear", myTTY, "linux",
+			}
+			if err := syscall.Exec(exe, argv, os.Environ()); err != nil {
+				fmt.Printf("ERROR: exec agetty: %v\n", err)
+				enterCbreak()
+				pause()
+				continue
+			}
+			// Unreachable on success.
 		default:
 			// empty / invalid: loop redraws
 		}
