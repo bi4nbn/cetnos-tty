@@ -1242,6 +1242,15 @@ func diskInfo(dev string) (bus, model, serial string) {
 			}
 		}
 	}
+	// RAID virtual disks (PERC/H700 etc) expose ID_SERIAL as
+	// "controllerSerial_virtual/path" e.g. "6509a4c0afca2_data_hdd/storage1_hdd".
+	// Strip the trailing virtual-disk path after the first underscore.
+	if idx := strings.Index(serial, "_data_hdd/"); idx > 0 {
+		serial = serial[:idx]
+	} else if idx := strings.Index(serial, "_"); idx > 0 {
+		// generic: keep up to first underscore
+		serial = serial[:idx]
+	}
 	if serial == "" {
 		serial = readFileTrim("/sys/block/" + dev + "/device/serial")
 	}
