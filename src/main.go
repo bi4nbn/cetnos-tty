@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -29,11 +30,11 @@ var (
 	rel        = "SSCLOUD Linux-TTY Console"
 	myTTY      string // e.g. tty1 / ttyS0
 	myGetty    string // e.g. getty@tty1.service / serial-getty@ttyS0.service
-	leaving    = 0
-	interrupt  = 0
-	nmActive   = 0
+	leaving    atomic.Int32
+	interrupt  atomic.Int32
+	nmActive   atomic.Int32
 	stdinIsTty = false
-	eofFlag    = false
+	eofFlag    atomic.Bool
 	origTermios *termios
 	netBackend = "rhel" // "rhel" = ifcfg+nmcli, "debian" = /etc/network/interfaces
 )
@@ -77,23 +78,7 @@ func tcSet(fd int, t *termios) error {
 	return nil
 }
 
-func setEcho(on bool) {
-	fd := int(os.Stdin.Fd())
-	t, err := tcGet(fd)
-	if err != nil {
-		return
-	}
-	if on {
-		t.Lflag |= syscall.ECHO
-	} else {
-		t.Lflag &^= syscall.ECHO
-	}
-	tcSet(fd, t)
-}
-
 // ---------- small helpers ----------
-
-func printf(f string, a ...interface{}) { fmt.Fprintf(os.Stdout, f, a...) }
 
 func run(name string, args ...string) (string, error) {
 	c := exec.Command(name, args...)
@@ -146,9 +131,12 @@ func initSignals() {
 	go func() {
 		for s := range ch {
 			if s == os.Interrupt {
-				interrupt = 1 // flag only; NEVER exit in the handler body
+				interrupt.Store(1)
 			} else if s == syscall.SIGTERM {
-				leaving = 1
+				leaving.Store(1)
+				if stdinIsTty && origTermios != nil {
+					tcSet(int(os.Stdin.Fd()), origTermios)
+				}
 				os.Exit(143)
 			}
 		}
@@ -184,18 +172,6 @@ func detectTTY() {
 	}
 }
 
-func restoreGetty() {
-	if leaving != 1 {
-		return
-	}
-	g := myGetty
-	if g == "" {
-		g = "getty@tty1.service"
-	}
-	c := exec.Command("systemctl", "--no-block", "start", g)
-	c.Run()
-}
-
 // ---------- migrate old ifcfg backups ----------
 
 var bakNameRe = regexp.MustCompile(`^\.[0-9]{8}_[0-9]{6}$`)
@@ -207,7 +183,7 @@ func migrateIfcfgBackups() {
 		for _, e := range entries {
 			os.Rename("/root/ifcfg-backup/"+e.Name(), filepath.Join(bakDir, e.Name()))
 		}
-		os.Remove("/root/ifcfg-backup")
+		os.RemoveAll("/root/ifcfg-backup")
 	}
 	entries, err := os.ReadDir(ifcfgDir)
 	if err != nil {
@@ -249,10 +225,10 @@ func ask(prompt string) (string, bool) {
 	var buf []byte
 	readBuf := make([]byte, 1)
 	for {
-		if eofFlag {
+		if eofFlag.Load() {
 			return "", false
 		}
-		if interrupt == 1 {
+		if interrupt.Load() == 1 {
 			return "", true
 		}
 		n, err := os.Stdin.Read(readBuf)
@@ -261,7 +237,7 @@ func ask(prompt string) (string, bool) {
 			// should just return to the menu loop, not kill the process.
 			// Only exit when stdin is a pipe and the writer closed it.
 			if !stdinIsTty && err == io.EOF {
-				eofFlag = true
+				eofFlag.Store(true)
 				return "", false
 			}
 			time.Sleep(50 * time.Millisecond)
@@ -277,7 +253,7 @@ func ask(prompt string) (string, bool) {
 			return string(buf), false
 		case 0x03, 0x1b: // Ctrl+C or ESC
 			fmt.Println()
-			interrupt = 1
+			interrupt.Store(1)
 			return "", true
 		case 0x7f, 0x08: // ^? and ^H
 			if len(buf) > 0 {
@@ -541,7 +517,7 @@ func netplanBackup() string {
 
 // netplanWriteStatic writes a static IP netplan YAML and applies it.
 func netplanWriteStatic(nic, ip, netmask, gateway, dns1, dns2 string) error {
-	ones, _ := maskSize(net.ParseIP(netmask).To4())
+	ones := maskSize(net.ParseIP(netmask).To4())
 	prefix := strconv.Itoa(ones)
 	yaml := "network:\n  version: 2\n  ethernets:\n    " + nic + ":\n" +
 		"      addresses: [" + ip + "/" + prefix + "]\n"
@@ -587,7 +563,7 @@ func nicApply(dev string) {
 		return
 	}
 	if isNMActive() {
-		nmActive = 1
+		nmActive.Store(1)
 		exec.Command("nmcli", "con", "reload").Run()
 		con, _ := run("nmcli", "-t", "-f", "NAME,DEVICE", "con", "show")
 		conName := dev
@@ -600,7 +576,7 @@ func nicApply(dev string) {
 		}
 		exec.Command("nmcli", "con", "up", conName).Run()
 	} else {
-		nmActive = 0
+		nmActive.Store(0)
 		exec.Command("ifdown", dev).Run()
 		exec.Command("ifup", dev).Run()
 	}
@@ -619,7 +595,7 @@ func nicReady(dev string) bool {
 	if ip4 == "" {
 		return false
 	}
-	if nmActive == 1 {
+	if nmActive.Load() == 1 {
 		st, _ := run("nmcli", "-t", "-f", "DEVICE,STATE", "dev", "status")
 		good := false
 		for _, line := range strings.Split(st, "\n") {
@@ -686,7 +662,7 @@ func applyNic(dev, bak string) {
 		}
 	}
 	if addr == "" {
-		fmt.Printf("FAILED: %s has no IPv4 address after %d attempt(s)", dev, i+1)
+		fmt.Printf("FAILED: %s has no IPv4 address after %d attempt(s)", dev, maxTries)
 		if bak != "" {
 			fmt.Printf(" (backup: %s)", bak)
 		}
@@ -701,7 +677,7 @@ func applyNic(dev, bak string) {
 				break
 			}
 		}
-		fmt.Printf("FAILED: %s has %s but NetworkManager state is '%s' after %d attempt(s)", dev, addr, stt, i+1)
+		fmt.Printf("FAILED: %s has %s but NetworkManager state is '%s' after %d attempt(s)", dev, addr, stt, maxTries)
 		if bak != "" {
 			fmt.Printf(" (backup: %s)", bak)
 		}
@@ -837,7 +813,7 @@ func staticConfig() {
 	mask := net.ParseIP(netmask).To4()
 	ipnet := net.IPNet{IP: ip, Mask: net.IPMask(mask)}
 	network := ipnet.IP.Mask(ipnet.Mask).To4()
-	prefix, _ := maskSize(mask)
+	prefix := maskSize(mask)
 	gwSuggest := ""
 	if prefix < 31 {
 		gwSuggest = net.IPv4(network[0], network[1], network[2], network[3]+1).To4().String()
@@ -1007,7 +983,7 @@ func staticConfig() {
 	// quick ping
 	pingTarget := gateway
 	if pingTarget == "" {
-		pingTarget = "qq.com"
+		pingTarget = "223.6.6.6"
 	}
 	c := exec.Command("ping", "-c", "2", "-W", "2", pingTarget)
 	if c.Run() == nil {
@@ -1031,9 +1007,6 @@ func netmaskIsValid(m string) bool {
 	if v4 == nil {
 		return false
 	}
-	// must be contiguous
-	ones, _ := v4.DefaultMask().Size()
-	_ = ones
 	// check contiguous
 	b := []byte(v4)
 	seen0 := false
@@ -1049,7 +1022,7 @@ func netmaskIsValid(m string) bool {
 	return true
 }
 
-func maskSize(m net.IP) (int, bool) {
+func maskSize(m net.IP) int {
 	b := []byte(m.To4())
 	ones := 0
 	for _, by := range b {
@@ -1057,11 +1030,11 @@ func maskSize(m net.IP) (int, bool) {
 			if by&(1<<bit) != 0 {
 				ones++
 			} else {
-				return ones, true
+				return ones
 			}
 		}
 	}
-	return ones, true
+	return ones
 }
 
 // ---------- DHCP ----------
@@ -1135,8 +1108,8 @@ func pingTest() {
 	fmt.Println("======================== PING TEST ========================")
 	runBg("ping", "-c", "4", "-W", "2", "223.6.6.6")
 	fmt.Println("==========================================================================")
-	if interrupt == 1 {
-		interrupt = 0
+	if interrupt.Load() == 1 {
+		interrupt.Store(0)
 		return
 	}
 	pause()
@@ -1631,20 +1604,20 @@ func main() {
 	for {
 		drawMenu()
 		choice, intr := ask("Select [1-7]: ")
-		if eofFlag {
-			leaving = 1
+		if eofFlag.Load() {
+			leaving.Store(1)
 			return
 		}
 		if intr {
-			interrupt = 0
+			interrupt.Store(0)
 			continue
 		}
 		choice = strings.TrimSpace(choice)
 		switch choice {
 		case "1":
 			staticConfig()
-			if interrupt == 1 {
-				interrupt = 0
+			if interrupt.Load() == 1 {
+				interrupt.Store(0)
 				continue
 			}
 			pause()
@@ -1669,19 +1642,20 @@ func main() {
 				time.Sleep(10 * time.Second)
 			}
 		case "7":
-			leaving = 1
+			leaving.Store(1)
 			// restore terminal to normal mode
 			if stdinIsTty && origTermios != nil {
 				tcSet(int(os.Stdin.Fd()), origTermios)
 			}
 			// Jump to system's normal agetty login prompt.
 			argv := []string{"agetty", "--noclear", myTTY, "linux"}
-			syscall.Exec("/sbin/agetty", argv, os.Environ())
+			exe, _ := exec.LookPath("agetty")
+			syscall.Exec(exe, argv, os.Environ())
 			os.Exit(0)
 		case "666":
 			// hidden entry: passwordless root shell (VT consoles only)
 			if regexp.MustCompile(`^tty[0-9]`).MatchString(myTTY) {
-				leaving = 1
+				leaving.Store(1)
 				if stdinIsTty && origTermios != nil {
 					tcSet(int(os.Stdin.Fd()), origTermios)
 				}
@@ -1693,7 +1667,8 @@ func main() {
 					"--login-program", "/usr/local/sbin/linux-root-shell",
 					"--noclear", myTTY, "linux",
 				}
-				syscall.Exec("/sbin/agetty", argv, os.Environ())
+				exe, _ := exec.LookPath("agetty")
+				syscall.Exec(exe, argv, os.Environ())
 				// If exec fails, exit
 				os.Exit(0)
 			}
@@ -1701,8 +1676,8 @@ func main() {
 			// empty / invalid: loop redraws
 		}
 		// clear any leftover interrupt flag from sub-functions
-		if interrupt == 1 {
-			interrupt = 0
+		if interrupt.Load() == 1 {
+			interrupt.Store(0)
 			continue
 		}
 	}
