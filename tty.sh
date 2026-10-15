@@ -94,24 +94,8 @@ exec /usr/local/sbin/linux-tty
 SH
 chmod 755 /usr/local/sbin/login-exit
 
-# getty override: after login shell exits, return to menu
-echo "[5/6] configuring getty override ..."
-cat > /usr/local/sbin/getty-exit.sh <<'SH'
-#!/bin/bash
-sleep 1
-/usr/bin/systemctl start linux-tty@tty1.service
-SH
-chmod 755 /usr/local/sbin/getty-exit.sh
-
-mkdir -p /etc/systemd/system/getty@tty1.service.d
-cat > /etc/systemd/system/getty@tty1.service.d/override.conf <<'CONF'
-[Service]
-Restart=no
-ExecStopPost=/usr/local/sbin/getty-exit.sh
-CONF
-
 # disable sysrq
-echo "[6/6] disabling sysrq ..."
+echo "[5/5] disabling sysrq ..."
 echo 'kernel.sysrq = 0' > /etc/sysctl.d/99-linux-tty.conf
 sysctl -w kernel.sysrq=0 2>/dev/null || true
 
