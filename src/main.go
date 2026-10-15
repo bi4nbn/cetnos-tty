@@ -573,8 +573,12 @@ func netplanWriteDHCP(nic string) error {
 // sees syntax / conflict errors instead of a silent "no IPv4".
 func netplanApply() {
 	out, err := run("netplan", "apply")
-	if err != nil && out != "" {
-		fmt.Printf("netplan apply: %s\n", out)
+	if err != nil {
+		if out != "" {
+			fmt.Printf("netplan apply: %s\n", out)
+		} else {
+			fmt.Printf("netplan apply failed: %v\n", err)
+		}
 	}
 }
 
@@ -1537,7 +1541,11 @@ func drawMenu() {
 	})
 	var ips []string
 	for _, e := range entries {
-		ips = append(ips, e.nic+"("+e.ip+")")
+		if e.v6 {
+			ips = append(ips, e.nic+"["+e.ip+"]")
+		} else {
+			ips = append(ips, e.nic+"("+e.ip+")")
+		}
 	}
 	ipStr := strings.Join(ips, " ")
 	if ipStr == "" {
@@ -1659,8 +1667,11 @@ func main() {
 	detectTTY()
 	// cbreak mode (char-by-char, no echo, VMIN=0/VTIME=2)
 	enterCbreak()
-	// disable sysrq
-	os.WriteFile("/proc/sys/kernel/sysrq", []byte("0"), 0644)
+	// disable sysrq, restore on exit
+	if orig, err := os.ReadFile("/proc/sys/kernel/sysrq"); err == nil {
+		os.WriteFile("/proc/sys/kernel/sysrq", []byte("0"), 0644)
+		defer os.WriteFile("/proc/sys/kernel/sysrq", orig, 0644)
+	}
 	initSignals()
 	migrateIfcfgBackups()
 	// restore terminal on exit
@@ -1695,7 +1706,7 @@ func main() {
 			if confirm("Reboot now?") {
 				fmt.Println("Rebooting ...")
 				syscall.Sync()
-				if err := exec.Command("reboot").Run(); err != nil {
+				if err := exec.Command("systemctl", "reboot").Run(); err != nil {
 					fmt.Printf("ERROR: reboot failed: %v\n", err)
 					pause()
 					continue
@@ -1706,7 +1717,7 @@ func main() {
 			if confirm("Power off now?") {
 				fmt.Println("Powering off ...")
 				syscall.Sync()
-				if err := exec.Command("poweroff").Run(); err != nil {
+				if err := exec.Command("systemctl", "poweroff").Run(); err != nil {
 					fmt.Printf("ERROR: poweroff failed: %v\n", err)
 					pause()
 					continue
@@ -1734,8 +1745,15 @@ func main() {
 			// Unreachable on success.
 		case "666":
 			// hidden entry: passwordless root shell (VT consoles only)
-			if !regexp.MustCompile(`^tty[0-9]`).MatchString(myTTY) {
+			if !strings.HasPrefix(myTTY, "tty") {
+				fmt.Println("Not available on this console.")
+				time.Sleep(1 * time.Second)
 				break
+			}
+			if _, err := os.Stat("/usr/local/sbin/linux-root-shell"); err != nil {
+				fmt.Println("ERROR: linux-root-shell not installed.")
+				pause()
+				continue
 			}
 			exe, err := exec.LookPath("agetty")
 			if err != nil {
