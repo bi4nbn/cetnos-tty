@@ -1443,6 +1443,8 @@ type percDiskInfo struct {
 	DG     int
 	Serial string
 	Model  string
+	Intf   string // SATA / SAS
+	Med    string // SSD / HDD
 }
 
 var percCache map[int]percDiskInfo
@@ -1490,21 +1492,18 @@ func diskPercMap() (map[int]percDiskInfo, error) {
 	}
 	res := map[int]percDiskInfo{}
 	var curDG, curSlot, curDID int = -1, -1, -1
-	var curSerial, curModel string
+	var curSerial, curModel, curIntf, curMed string
 	flush := func() {
 		if curSlot >= 0 && curDID >= 0 {
-			info := percDiskInfo{Slot: curSlot, DID: curDID, DG: curDG, Serial: curSerial, Model: curModel}
-			// RAID mode: key by DG
+			info := percDiskInfo{Slot: curSlot, DID: curDID, DG: curDG, Serial: curSerial, Model: curModel, Intf: curIntf, Med: curMed}
 			if curDG >= 0 {
 				res[curDG] = info
 			}
-			// Passthrough mode: also key by DID (sysfs target == DID)
 			res[-curDID-1] = info
 		}
 	}
-	// Table row: "32:0      0 Onln   1 5.457 TB SATA HDD ..."
-	//                EID:Slt  DID State  DG  Size ...
-	tblRe := regexp.MustCompile(`^(\d+):(\d+)\s+(\d+)\s+\w+\s+(-?\d+)`)
+	// Table row: "32:0      0 Onln   1 5.457 TB SATA HDD N   N  512B ST6000NM0115-1YZ110"
+	tblRe := regexp.MustCompile(`^(\d+):(\d+)\s+(\d+)\s+\w+\s+(-?\d+)\s+[\d.]+\s+\w+\s+(\w+)\s+(\w+)`)
 	snRe := regexp.MustCompile(`^SN\s*=\s*(\S+)`)
 	modelRe := regexp.MustCompile(`^Model Number\s*=\s*(.+)`)
 	driveRe := regexp.MustCompile(`^Drive /c\d+/e\d+/s\d+\s*:$`)
@@ -1512,13 +1511,16 @@ func diskPercMap() (map[int]percDiskInfo, error) {
 		trim := strings.TrimSpace(line)
 		if driveRe.MatchString(trim) {
 			flush()
-			curDG, curSlot, curDID, curSerial, curModel = -1, -1, -1, "", ""
+			curDG, curSlot, curDID = -1, -1, -1
+			curSerial, curModel, curIntf, curMed = "", "", "", ""
 			continue
 		}
 		if m := tblRe.FindStringSubmatch(trim); m != nil {
 			curSlot, _ = strconv.Atoi(m[2])
 			curDID, _ = strconv.Atoi(m[3])
 			curDG, _ = strconv.Atoi(m[4])
+			curIntf = strings.ToUpper(m[5])
+			curMed = strings.ToUpper(m[6])
 			continue
 		}
 		if m := snRe.FindStringSubmatch(trim); m != nil {
@@ -1633,6 +1635,9 @@ func showDisks() {
 					}
 					if info.Model != "" {
 						model = info.Model
+					}
+					if info.Intf != "" && info.Med != "" {
+						dt = info.Intf + " " + info.Med
 					}
 				}
 			}
