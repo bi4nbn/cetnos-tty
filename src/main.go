@@ -1364,10 +1364,15 @@ func showDisks() {
 
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
-	// nvme0c0n1). Keep the shortest, most standard device name.
+	// nvme0c0n1). Only apply dedup to NVMe devices; RAID virtual disks
+	// (sdb, sdc, ...) share the controller serial but are distinct volumes.
 	deduped := []string{}
 	chosen := map[string]string{} // serial -> chosen device name
 	for _, dev := range disks {
+		if !strings.HasPrefix(dev, "nvme") {
+			deduped = append(deduped, dev)
+			continue
+		}
 		_, _, serial := diskInfo(dev)
 		key := strings.TrimSpace(serial)
 		if key == "" {
@@ -1376,7 +1381,6 @@ func showDisks() {
 		}
 		if prev, ok := chosen[key]; ok {
 			if len(dev) < len(prev) {
-				// replace the previously chosen name with the shorter one
 				for i, d := range deduped {
 					if d == prev {
 						deduped[i] = dev
