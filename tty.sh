@@ -16,7 +16,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # download binary
-echo "[1/6] downloading linux-tty ..."
+echo "[1/5] downloading linux-tty ..."
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL -o /tmp/linux-tty "$BIN_URL"
 elif command -v wget >/dev/null 2>&1; then
@@ -27,12 +27,12 @@ else
 fi
 
 # install binary
-echo "[2/6] installing binary ..."
+echo "[2/5] installing binary ..."
 install -m 0700 /tmp/linux-tty "$BIN_PATH"
 rm -f /tmp/linux-tty
 
 # systemd unit
-echo "[3/6] installing systemd units ..."
+echo "[3/5] installing systemd units ..."
 cat > /etc/systemd/system/linux-tty@.service <<'UNIT'
 [Unit]
 Description=SSCLOUD Linux-TTY Console
@@ -76,23 +76,13 @@ WantedBy=multi-user.target
 UNIT
 
 # root-shell script
-echo "[4/6] installing root-shell ..."
+echo "[4/5] installing root-shell ..."
 cat > "$SHELL_PATH" <<'SH'
 #!/bin/bash
 /bin/bash -l
 exec /usr/local/sbin/linux-tty
 SH
 chmod 700 "$SHELL_PATH"
-
-# login-exit script (option 7: normal login, return to menu on logout)
-cat > /usr/local/sbin/login-exit <<'SH'
-#!/bin/bash
-stty sane 2>/dev/null
-clear
-/bin/login
-exec /usr/local/sbin/linux-tty
-SH
-chmod 755 /usr/local/sbin/login-exit
 
 # disable sysrq
 echo "[5/5] disabling sysrq ..."
