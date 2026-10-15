@@ -1492,8 +1492,11 @@ func drawMenu() {
 			continue
 		}
 		nic := f[1]
+		// keep real NICs (have /device) and bond masters (have /bonding); skip bridge/veth/dummy/tun
 		if _, err := os.Stat("/sys/class/net/" + nic + "/device"); err != nil {
-			continue
+			if _, err := os.Stat("/sys/class/net/" + nic + "/bonding"); err != nil {
+				continue
+			}
 		}
 		ip := f[3]
 		key := nic + "/" + ip
