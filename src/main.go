@@ -1635,9 +1635,6 @@ func showDisks() {
 				}
 				if found && len(disks) > 0 {
 					first := disks[0]
-					if first.Serial != "" {
-						serial = first.Serial
-					}
 					if first.Model != "" {
 						model = first.Model
 					}
@@ -1645,11 +1642,18 @@ func showDisks() {
 						dt = first.Intf + "-" + first.Med
 					}
 					// Build slot string: "00" or "00,01" or "00,01,02"
-					parts := []string{}
+					slotParts := []string{}
+					snParts := []string{}
 					for _, d := range disks {
-						parts = append(parts, fmt.Sprintf("%02d", d.Slot))
+						slotParts = append(slotParts, fmt.Sprintf("%02d", d.Slot))
+						if d.Serial != "" {
+							snParts = append(snParts, d.Serial)
+						}
 					}
-					slot = strings.Join(parts, ",")
+					slot = strings.Join(slotParts, ",")
+					if len(snParts) > 0 {
+						serial = strings.Join(snParts, ",")
+					}
 				}
 			}
 		}
@@ -1661,8 +1665,8 @@ func showDisks() {
 		if len(model) > 16 {
 			model = model[:16]
 		}
-		if len(serial) > 30 {
-			serial = serial[:30]
+		if len(serial) > 60 {
+			serial = serial[:60]
 		}
 		shown++
 		fmt.Printf("  %-12s %-6s %-8s %-16s %-12s %s\n", display, size, dt, model, slot, serial)
