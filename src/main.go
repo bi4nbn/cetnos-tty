@@ -1430,30 +1430,78 @@ func diskSizeHuman(dev string) string {
 	return fmt.Sprintf("%.1fG", gb)
 }
 
-// diskSlotMap builds DG→Slot mapping via perccli64.
+// percDiskInfo holds physical disk info from perccli64.
+type percDiskInfo struct {
+	Slot   int
+	Serial string
+	Model  string
+}
+
+// diskSlotMap builds DG→slot and DG→serial maps via perccli64.
 // In megaraid_sas, sysfs SCSI target id == VD number == DG number.
-// perccli PD LIST gives DID→DG and EID:Slot; we map DG→Slot.
 func diskSlotMap() map[int]string {
-	tool := "/opt/MegaRAID/perccli/perccli64"
-	if _, err := os.Stat(tool); err != nil {
-		return nil
-	}
-	out, err := run(tool, "/c0/eall/sall", "show")
-	if err != nil {
-		return nil
-	}
-	re := regexp.MustCompile(`^(\d+):(\d+)\s+(\d+)\s+\w+\s+(\d+)`)
+	m, _ := diskPercMap()
 	res := map[int]string{}
-	for _, line := range strings.Split(out, "\n") {
-		m := re.FindStringSubmatch(strings.TrimSpace(line))
-		if m == nil {
-			continue
-		}
-		dg, _ := strconv.Atoi(m[4])
-		slot, _ := strconv.Atoi(m[2])
-		res[dg] = strconv.Itoa(slot)
+	for dg, info := range m {
+		res[dg] = strconv.Itoa(info.Slot)
 	}
 	return res
+}
+
+// diskSerialMap returns DG→serial from perccli64.
+func diskSerialMap() map[int]string {
+	m, _ := diskPercMap()
+	res := map[int]string{}
+	for dg, info := range m {
+		res[dg] = info.Serial
+	}
+	return res
+}
+
+func diskPercMap() (map[int]percDiskInfo, error) {
+	tool := "/opt/MegaRAID/perccli/perccli64"
+	if _, err := os.Stat(tool); err != nil {
+		return nil, err
+	}
+	out, err := run(tool, "/c0/eall/sall", "show", "all")
+	if err != nil {
+		return nil, err
+	}
+	res := map[int]percDiskInfo{}
+	var curSlot, curDG int = -1, -1
+	var curSerial, curModel string
+	flush := func() {
+		if curDG >= 0 {
+			res[curDG] = percDiskInfo{Slot: curSlot, Serial: curSerial, Model: curModel}
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		trim := strings.TrimSpace(line)
+		// New drive block: "Drive /c0/e32/s0:"
+		if strings.HasPrefix(trim, "Drive /c") {
+			flush()
+			curSlot, curDG, curSerial, curModel = -1, -1, "", ""
+			re := regexp.MustCompile(`/e(\d+)/s(\d+)`)
+			if m := re.FindStringSubmatch(trim); m != nil {
+				curSlot, _ = strconv.Atoi(m[2])
+			}
+			continue
+		}
+		if curSlot < 0 {
+			continue
+		}
+		if strings.HasPrefix(trim, "DG =") || strings.HasPrefix(trim, "DG:") {
+			if n, err := strconv.Atoi(strings.TrimSpace(strings.SplitN(trim, "=", 2)[len(strings.SplitN(trim, "=", 2))-1])); err == nil {
+				curDG = n
+			}
+		} else if strings.HasPrefix(trim, "SN =") || strings.HasPrefix(trim, "SN:") {
+			curSerial = strings.TrimSpace(strings.SplitN(trim, "=", 2)[len(strings.SplitN(trim, "=", 2))-1])
+		} else if strings.HasPrefix(trim, "Model =") || strings.HasPrefix(trim, "Model:") {
+			curModel = strings.TrimSpace(strings.SplitN(trim, "=", 2)[len(strings.SplitN(trim, "=", 2))-1])
+		}
+	}
+	flush()
+	return res, nil
 }
 
 // sysfsTarget returns the SCSI target id for a block device (== VD/DG number).
@@ -1488,6 +1536,7 @@ func showDisks() {
 	fmt.Printf("  %-12s %-6s %-4s %-16s %-3s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
 	fmt.Println("  ------------------------------------------------------------")
 	slotMap := diskSlotMap()
+	serialMap := diskSerialMap()
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
 	// nvme0c0n1). Only apply dedup to NVMe devices; RAID virtual disks
@@ -1530,6 +1579,15 @@ func showDisks() {
 		size := diskSizeHuman(dev)
 		dt := diskType(dev)
 		_, model, serial := diskInfo(dev)
+		if serial == "" || serial == "-" {
+			if t := sysfsTarget(dev); t >= 0 {
+				if serialMap != nil {
+					if s, ok := serialMap[t]; ok && s != "" {
+						serial = s
+					}
+				}
+			}
+		}
 		slot := "-"
 		if t := sysfsTarget(dev); t >= 0 {
 			if slotMap != nil {
