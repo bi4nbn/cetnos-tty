@@ -1643,7 +1643,7 @@ func showDisks() {
 		}
 		shown++
 		fmt.Printf("  %-12s %-6s %-4s %-16s %-3s %s\n", display, size, dt, model, slot, serial)
-		if shown%10 == 0 && shown < len(deduped) {
+		if shown%20 == 0 && shown < len(deduped) {
 			a, intr := ask("  -- more -- Press Enter for next page (q+Enter to stop): ")
 			if intr {
 				return
