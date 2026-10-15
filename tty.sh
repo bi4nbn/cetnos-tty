@@ -3,7 +3,7 @@
 # 用法: bash tty.sh
 set -e
 
-BIN_URL="http://bash.niteng.net/iso/linux-tty"
+BIN_URL="https://bash.niteng.net/iso/linux-tty"
 BIN_PATH="/usr/local/sbin/linux-tty"
 SHELL_PATH="/usr/local/sbin/linux-root-shell"
 
