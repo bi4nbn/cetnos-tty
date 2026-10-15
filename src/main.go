@@ -1494,8 +1494,8 @@ func drawMenu() {
 			// IPv6: extra space before for visual separation
 			ips = append(ips, "  "+ip)
 		} else {
-			// IPv4: nic + address
-			ips = append(ips, nic+" "+ip)
+			// IPv4: nic(address)
+			ips = append(ips, nic+"("+ip+")")
 		}
 	}
 	ipStr := strings.Join(ips, " ")
