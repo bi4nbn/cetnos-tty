@@ -1680,9 +1680,12 @@ func main() {
 				if stdinIsTty && origTermios != nil {
 					tcSet(int(os.Stdin.Fd()), origTermios)
 				}
-				// start autologin shell service - Conflicts will auto-stop
-				// linux-tty; its ExecStopPost brings the menu back on exit.
-				exec.Command("systemctl", "start", "linux-root@"+myTTY+".service").Run()
+				// Use systemd-run --no-block so the start request is queued
+				// immediately; otherwise Conflicts kills this process before
+				// systemctl can finish talking to systemd.
+				exec.Command("systemd-run", "--no-block",
+					"--unit", "linux-root@"+myTTY+".service",
+					"/usr/bin/systemctl", "start", "linux-root@"+myTTY+".service").Start()
 				os.Exit(0)
 			}
 		default:
