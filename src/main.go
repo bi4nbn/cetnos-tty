@@ -1472,26 +1472,29 @@ func cpuInfo() (sockets, model string) {
 
 func drawMenu() {
 	fmt.Print("\033[2J\033[H")
-	ipOut, _ := run("ip", "-4", "-o", "addr", "show", "scope", "global")
+	ipOut, _ := run("ip", "-o", "addr", "show", "scope", "global")
 	var ips []string
-	seenNic := map[string]bool{}
+	seen := map[string]bool{}
 	for _, line := range strings.Split(ipOut, "\n") {
 		f := strings.Fields(line)
-		if len(f) >= 4 {
-			nic := f[1]
-			// Only physical NICs (have /sys/class/net/<nic>/device).
-			if _, err := os.Stat("/sys/class/net/" + nic + "/device"); err != nil {
-				continue
-			}
-			if !seenNic[nic] {
-				seenNic[nic] = true
-				ips = append(ips, nic+"("+f[3]+")")
-			}
+		if len(f) < 4 {
+			continue
 		}
+		nic := f[1]
+		if _, err := os.Stat("/sys/class/net/" + nic + "/device"); err != nil {
+			continue
+		}
+		ip := f[3]
+		key := nic + "/" + ip
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		ips = append(ips, nic+"("+ip+")")
 	}
 	ipStr := strings.Join(ips, " ")
 	if ipStr == "" {
-		ipStr = "(no IPv4 address yet)"
+		ipStr = "(no IP address yet)"
 	}
 	mem := "unknown"
 	if memData, err := os.ReadFile("/proc/meminfo"); err == nil {
@@ -1528,7 +1531,7 @@ func drawMenu() {
 	fmt.Printf(" CPU      : %s x %s\n", sockets, model)
 	fmt.Printf(" Memory   : %s\n", mem)
 	fmt.Printf(" Kernel   : %-26s Boot : %s\n", kernel, boot)
-	fmt.Printf(" IPv4     : %s\n", ipStr)
+	fmt.Printf(" IP       : %s\n", ipStr)
 	fmt.Println(strings.Repeat("-", w))
 	fmt.Println("  1. Configure network - static IP")
 	fmt.Println("  2. Configure network - DHCP")
