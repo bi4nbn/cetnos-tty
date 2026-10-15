@@ -38,7 +38,7 @@ cat > /etc/systemd/system/linux-tty@.service <<'UNIT'
 Description=SSCLOUD Linux-TTY Console
 After=systemd-user-sessions.service plymouth-quit-wait.service
 Before=getty.target
-Conflicts=getty@%i.service linux-root@%i.service
+Conflicts=getty@%i.service
 
 [Service]
 Environment=LANG=en_US.UTF-8

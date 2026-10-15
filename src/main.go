@@ -263,7 +263,20 @@ func ask(prompt string) (string, bool) {
 		case '\n', '\r':
 			fmt.Println()
 			return string(buf), false
-		case 0x03, 0x1b: // Ctrl+C or ESC
+		case 0x03: // Ctrl+C
+			fmt.Println()
+			interrupt.Store(1)
+			return "", true
+		case 0x1b: // ESC or arrow key escape sequence
+			// Peek for [A/B/C/D (arrow keys) — discard, treat as no-op.
+			// If no follow-up byte arrives quickly, treat as ESC = interrupt.
+			time.Sleep(30 * time.Millisecond)
+			extra := make([]byte, 3)
+			m, _ := os.Stdin.Read(extra)
+			if m >= 3 && extra[0] == '[' && extra[1] >= 'A' && extra[1] <= 'D' {
+				// arrow key: discard, keep reading
+				continue
+			}
 			fmt.Println()
 			interrupt.Store(1)
 			return "", true
@@ -563,7 +576,14 @@ func netplanBackup() string {
 
 // netplanWriteStatic writes a static IP netplan YAML and applies it.
 func netplanWriteStatic(nic, ip, netmask, gateway, dns1, dns2 string) error {
-	ones := maskSize(net.ParseIP(netmask).To4())
+	maskIP := net.ParseIP(netmask).To4()
+	if maskIP == nil {
+		return fmt.Errorf("invalid netmask: %s", netmask)
+	}
+	ones := maskSize(maskIP)
+	if ones == 0 || ones > 32 {
+		return fmt.Errorf("invalid netmask prefix: %s", netmask)
+	}
 	prefix := strconv.Itoa(ones)
 	yaml := "network:\n  version: 2\n  renderer: networkd\n  ethernets:\n    " + nic + ":\n" +
 		"      addresses: [" + ip + "/" + prefix + "]\n"
