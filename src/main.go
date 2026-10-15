@@ -1532,7 +1532,7 @@ func showDisks() {
 	slotMap := map[int]string{}
 	if pm, ok := diskPercMapCache(); ok {
 		for dg, info := range pm {
-			slotMap[dg] = strconv.Itoa(info.Slot)
+			slotMap[dg] = fmt.Sprintf("%02d", info.Slot)
 		}
 	}
 	// Dedup by serial: the same physical SSD may appear as multiple block
@@ -1597,10 +1597,10 @@ func showDisks() {
 				if s, ok := slotMap[t]; ok {
 					slot = s
 				} else {
-					slot = strconv.Itoa(t)
+					slot = fmt.Sprintf("%02d", t)
 				}
 			} else {
-				slot = strconv.Itoa(t)
+				slot = fmt.Sprintf("%02d", t)
 			}
 		}
 		if len(model) > 16 {
