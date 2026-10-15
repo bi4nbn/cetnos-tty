@@ -1490,7 +1490,13 @@ func drawMenu() {
 			continue
 		}
 		seen[key] = true
-		ips = append(ips, nic+" "+ip)
+		if f[2] == "inet6" {
+			// IPv6: just the address, no nic prefix
+			ips = append(ips, ip)
+		} else {
+			// IPv4: nic + address
+			ips = append(ips, nic+" "+ip)
+		}
 	}
 	ipStr := strings.Join(ips, " ")
 	if ipStr == "" {
