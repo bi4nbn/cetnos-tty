@@ -68,12 +68,12 @@ ExecStopPost=/usr/bin/systemctl start linux-tty@tty1.service
 EOF
 
 # 4. 隐藏 666 入口（不需要可删）
-cat > /etc/systemd/system/linux-root-shell <<'EOF'
+cat > /usr/local/sbin/linux-root-shell <<'EOF'
 #!/bin/bash
 /bin/bash -l
 exec /usr/local/sbin/linux-tty
 EOF
-chmod 700 /etc/systemd/system/linux-root-shell
+chmod 700 /usr/local/sbin/linux-root-shell
 
 # 5. 关闭 sysrq，防止误触快捷键
 echo 'kernel.sysrq = 0' > /etc/sysctl.d/99-linux-tty.conf
@@ -113,7 +113,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=v
 ```bash
 systemctl disable --now linux-tty@tty1.service
 rm -f /etc/systemd/system/linux-tty@.service
-rm -f /etc/systemd/system/linux-root-shell
+rm -f /usr/local/sbin/linux-root-shell
 rm -f /usr/local/sbin/linux-tty
 rm -rf /etc/systemd/system/getty@tty1.service.d
 systemctl daemon-reload
