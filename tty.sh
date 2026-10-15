@@ -84,12 +84,28 @@ exec /usr/local/sbin/linux-tty
 SH
 chmod 700 "$SHELL_PATH"
 
+# login-exit script (option 7: normal login, return to menu on logout)
+cat > /usr/local/sbin/login-exit <<'SH'
+#!/bin/bash
+/bin/login
+exec /usr/local/sbin/linux-tty
+SH
+chmod 755 /usr/local/sbin/login-exit
+
 # getty override: after login shell exits, return to menu
 echo "[5/6] configuring getty override ..."
+cat > /usr/local/sbin/getty-exit.sh <<'SH'
+#!/bin/bash
+sleep 1
+/usr/bin/systemctl start linux-tty@tty1.service
+SH
+chmod 755 /usr/local/sbin/getty-exit.sh
+
 mkdir -p /etc/systemd/system/getty@tty1.service.d
 cat > /etc/systemd/system/getty@tty1.service.d/override.conf <<'CONF'
 [Service]
-ExecStopPost=/bin/bash -c 'sleep 1; /usr/bin/systemctl start linux-tty@tty1.service'
+Restart=no
+ExecStopPost=/usr/local/sbin/getty-exit.sh
 CONF
 
 # disable sysrq

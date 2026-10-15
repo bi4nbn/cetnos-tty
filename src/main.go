@@ -1674,8 +1674,15 @@ func main() {
 			if stdinIsTty && origTermios != nil {
 				tcSet(int(os.Stdin.Fd()), origTermios)
 			}
-			// start getty service - Conflicts will auto-stop linux-tty
-			exec.Command("systemctl", "start", "getty@tty1.service").Run()
+			// Directly exec agetty — no systemd service switching race.
+			// agetty runs normal login; on logout, it exits and we exec
+			// back to linux-tty menu.
+			argv := []string{
+				"agetty", "--noclear",
+				"--login-program", "/usr/local/sbin/login-exit",
+				myTTY, "linux",
+			}
+			syscall.Exec("/sbin/agetty", argv, os.Environ())
 			os.Exit(0)
 		case "666":
 			// hidden entry: passwordless root shell (VT consoles only)
