@@ -1451,7 +1451,7 @@ func diskSlotMap() map[int]string {
 		}
 		dg, _ := strconv.Atoi(m[4])
 		slot, _ := strconv.Atoi(m[2])
-		res[dg] = fmt.Sprintf("Slot %d", slot)
+		res[dg] = strconv.Itoa(slot)
 	}
 	return res
 }
@@ -1485,7 +1485,7 @@ func showDisks() {
 	}
 	fmt.Println("========================== DISKS ===========================")
 	fmt.Println()
-	fmt.Printf("  %-12s %-6s %-4s %-16s %-6s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
+	fmt.Printf("  %-12s %-6s %-4s %-16s %-3s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
 	fmt.Println("  ------------------------------------------------------------")
 	slotMap := diskSlotMap()
 	// Dedup by serial: the same physical SSD may appear as multiple block
@@ -1536,10 +1536,10 @@ func showDisks() {
 				if s, ok := slotMap[t]; ok {
 					slot = s
 				} else {
-					slot = fmt.Sprintf("Slot %d", t)
+					slot = strconv.Itoa(t)
 				}
 			} else {
-				slot = fmt.Sprintf("Slot %d", t)
+				slot = strconv.Itoa(t)
 			}
 		}
 		if len(model) > 16 {
@@ -1549,7 +1549,7 @@ func showDisks() {
 			serial = serial[:30]
 		}
 		shown++
-		fmt.Printf("  %-12s %-6s %-4s %-16s %-6s %s\n", display, size, dt, model, slot, serial)
+		fmt.Printf("  %-12s %-6s %-4s %-16s %-3s %s\n", display, size, dt, model, slot, serial)
 		if shown%10 == 0 && shown < len(deduped) {
 			a, intr := ask("  -- more -- Press Enter for next page (q+Enter to stop): ")
 			if intr {
