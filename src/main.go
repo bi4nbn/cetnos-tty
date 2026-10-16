@@ -1873,8 +1873,8 @@ func drawMenu() {
 	fmt.Println(strings.Repeat("-", w))
 	fmt.Println("  5. Reboot")
 	fmt.Println("  6. Power off")
-	fmt.Println("  7. Exit and enter the system")
-	fmt.Println("  8. Fix display (nomodeset)")
+	fmt.Println("  7. Fix display (nomodeset)")
+	fmt.Println("  8. Exit and enter the system")
 	fmt.Println(strings.Repeat("=", w))
 }
 
@@ -1980,6 +1980,21 @@ func main() {
 				time.Sleep(10 * time.Second)
 			}
 		case "7":
+			if confirm("Add nomodeset to grub and reboot?") {
+				fmt.Println("Fixing display ...")
+				b, _ := os.ReadFile("/etc/default/grub")
+				s := string(b)
+				if !strings.Contains(s, "nomodeset") {
+					s = strings.Replace(s, `GRUB_CMDLINE_LINUX="`, `GRUB_CMDLINE_LINUX="nomodeset `, 1)
+					os.WriteFile("/etc/default/grub", []byte(s), 0644)
+				}
+				exec.Command("grub2-mkconfig", "-o", "/boot/grub2/grub.cfg").Run()
+				fmt.Println("Rebooting ...")
+				syscall.Sync()
+				exec.Command("systemctl", "reboot").Run()
+				time.Sleep(10 * time.Second)
+			}
+		case "8":
 			// Resolve agetty FIRST, so a missing binary does not leave us in
 			// canonical mode with no way to get back to cbreak.
 			exe, err := exec.LookPath("agetty")
@@ -2001,21 +2016,6 @@ func main() {
 				continue
 			}
 			// Unreachable on success.
-		case "8":
-			if confirm("Add nomodeset to grub and reboot?") {
-				fmt.Println("Fixing display ...")
-				b, _ := os.ReadFile("/etc/default/grub")
-				s := string(b)
-				if !strings.Contains(s, "nomodeset") {
-					s = strings.Replace(s, `GRUB_CMDLINE_LINUX="`, `GRUB_CMDLINE_LINUX="nomodeset `, 1)
-					os.WriteFile("/etc/default/grub", []byte(s), 0644)
-				}
-				exec.Command("grub2-mkconfig", "-o", "/boot/grub2/grub.cfg").Run()
-				fmt.Println("Rebooting ...")
-				syscall.Sync()
-				exec.Command("systemctl", "reboot").Run()
-				time.Sleep(10 * time.Second)
-			}
 		case "666":
 			// hidden entry: passwordless root shell (VT consoles only)
 			if !isVTConsole(myTTY) {
