@@ -1873,7 +1873,7 @@ func drawMenu() {
 	fmt.Println(strings.Repeat("-", w))
 	fmt.Println("  5. Reboot")
 	fmt.Println("  6. Power off")
-	fmt.Println("  7. Fix display (nomodeset)")
+	fmt.Println("  7. Fix display")
 	fmt.Println("  8. Exit and enter the system")
 	fmt.Println(strings.Repeat("=", w))
 }
