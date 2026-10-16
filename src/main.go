@@ -1873,8 +1873,7 @@ func drawMenu() {
 	fmt.Println(strings.Repeat("-", w))
 	fmt.Println("  5. Reboot")
 	fmt.Println("  6. Power off")
-	fmt.Println("  7. Fix display")
-	fmt.Println("  8. Exit and enter the system")
+	fmt.Println("  7. Exit and enter the system")
 	fmt.Println(strings.Repeat("=", w))
 }
 
@@ -1934,7 +1933,7 @@ func main() {
 
 	for {
 		drawMenu()
-		choice, intr := ask("Select [1-8]: ")
+		choice, intr := ask("Select [1-7]: ")
 		if eofFlag.Load() {
 			return
 		}
@@ -1980,30 +1979,6 @@ func main() {
 				time.Sleep(10 * time.Second)
 			}
 		case "7":
-			if confirm("Fix display and reboot?") {
-				fmt.Println("Fixing display ...")
-				b, _ := os.ReadFile("/etc/default/grub")
-				s := string(b)
-				if !strings.Contains(s, "nomodeset") {
-					s = strings.Replace(s, `GRUB_CMDLINE_LINUX="`, `GRUB_CMDLINE_LINUX="nomodeset `, 1)
-					os.WriteFile("/etc/default/grub", []byte(s), 0644)
-				}
-				// Detect UEFI vs BIOS grub.cfg path
-				cfgPath := "/boot/grub2/grub.cfg"
-				if _, err := os.Stat("/sys/firmware/efi"); err == nil {
-					if _, err := os.Stat("/boot/efi/EFI/centos/grub.cfg"); err == nil {
-						cfgPath = "/boot/efi/EFI/centos/grub.cfg"
-					} else if _, err := os.Stat("/boot/efi/EFI/rocky/grub.cfg"); err == nil {
-						cfgPath = "/boot/efi/EFI/rocky/grub.cfg"
-					}
-				}
-				exec.Command("grub2-mkconfig", "-o", cfgPath).Run()
-				fmt.Println("Rebooting ...")
-				syscall.Sync()
-				exec.Command("systemctl", "reboot").Run()
-				time.Sleep(10 * time.Second)
-			}
-		case "8":
 			// Resolve agetty FIRST, so a missing binary does not leave us in
 			// canonical mode with no way to get back to cbreak.
 			exe, err := exec.LookPath("agetty")
