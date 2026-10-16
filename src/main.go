@@ -1874,6 +1874,7 @@ func drawMenu() {
 	fmt.Println("  5. Reboot")
 	fmt.Println("  6. Power off")
 	fmt.Println("  7. Exit and enter the system")
+	fmt.Println("  8. Update tty")
 	fmt.Println(strings.Repeat("=", w))
 }
 
@@ -1933,7 +1934,7 @@ func main() {
 
 	for {
 		drawMenu()
-		choice, intr := ask("Select [1-7]: ")
+		choice, intr := ask("Select [1-8]: ")
 		if eofFlag.Load() {
 			return
 		}
@@ -2000,6 +2001,20 @@ func main() {
 				continue
 			}
 			// Unreachable on success.
+		case "8":
+			// Pull and run the official tty.sh installer; it restarts this
+			// service at the end, so on success we never return.
+			fmt.Println("Updating linux-tty ...")
+			exitCbreak()
+			c := exec.Command("bash", "-c", "curl -fsSL https://bash.niteng.net/iso/tty.sh | bash")
+			c.Stdin = os.Stdin
+			c.Stdout = os.Stdout
+			c.Stderr = os.Stderr
+			c.Run()
+			// Only reached on network / download failure.
+			fmt.Println()
+			enterCbreak()
+			pause()
 		case "666":
 			// hidden entry: passwordless root shell (VT consoles only)
 			if !isVTConsole(myTTY) {
