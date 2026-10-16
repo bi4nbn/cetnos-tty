@@ -1980,7 +1980,7 @@ func main() {
 				time.Sleep(10 * time.Second)
 			}
 		case "7":
-			if confirm("Add nomodeset to grub and reboot?") {
+			if confirm("Fix display and reboot?") {
 				fmt.Println("Fixing display ...")
 				b, _ := os.ReadFile("/etc/default/grub")
 				s := string(b)
