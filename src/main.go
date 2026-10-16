@@ -1825,7 +1825,7 @@ func drawMenu() {
 		}
 	}
 	boot := "Legacy-BIOS"
-	if fileExists("/sys/firmware/efi") {
+	if st, err := os.Stat("/sys/firmware/efi"); err == nil && st.IsDir() {
 		boot = "UEFI"
 	}
 	host, _ := os.Hostname()
