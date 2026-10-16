@@ -1988,7 +1988,16 @@ func main() {
 					s = strings.Replace(s, `GRUB_CMDLINE_LINUX="`, `GRUB_CMDLINE_LINUX="nomodeset `, 1)
 					os.WriteFile("/etc/default/grub", []byte(s), 0644)
 				}
-				exec.Command("grub2-mkconfig", "-o", "/boot/grub2/grub.cfg").Run()
+				// Detect UEFI vs BIOS grub.cfg path
+				cfgPath := "/boot/grub2/grub.cfg"
+				if _, err := os.Stat("/sys/firmware/efi"); err == nil {
+					if _, err := os.Stat("/boot/efi/EFI/centos/grub.cfg"); err == nil {
+						cfgPath = "/boot/efi/EFI/centos/grub.cfg"
+					} else if _, err := os.Stat("/boot/efi/EFI/rocky/grub.cfg"); err == nil {
+						cfgPath = "/boot/efi/EFI/rocky/grub.cfg"
+					}
+				}
+				exec.Command("grub2-mkconfig", "-o", cfgPath).Run()
 				fmt.Println("Rebooting ...")
 				syscall.Sync()
 				exec.Command("systemctl", "reboot").Run()
