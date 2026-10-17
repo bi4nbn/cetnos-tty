@@ -2411,31 +2411,6 @@ func truncateStr(s string, n int) string {
 	return s[:n-3] + "..."
 }
 
-// getTTYSize returns the terminal size. When stdout is not a tty (pipes,
-// tests), COLUMNS is used as a fallback.
-func getTTYSize() (rows, cols int) {
-	var ws struct {
-		Row, Col, Xpixel, Ypixel uint16
-	}
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, os.Stdout.Fd(),
-		uintptr(0x5413), uintptr(unsafe.Pointer(&ws)))
-	if errno == 0 {
-		rows, cols = int(ws.Row), int(ws.Col)
-	}
-	if cols <= 0 {
-		if v, err := strconv.Atoi(os.Getenv("COLUMNS")); err == nil {
-			cols = v
-		}
-	}
-	if rows <= 0 {
-		rows = 24
-	}
-	if cols <= 0 {
-		cols = 80
-	}
-	return
-}
-
 func showDisks() {
 	fmt.Print("\033[2J\033[H")
 	syslist := systemDisks()
@@ -2581,30 +2556,15 @@ func showDisks() {
 		totalPages = 1
 	}
 
-	_, cols := getTTYSize()
-	usable := cols - 2
-	if usable < 60 {
-		usable = 78
-	}
-	// Keep the same six columns on BIOS and UEFI consoles. Only the widths
-	// shrink; long fields are truncated with "...". The serial column is
-	// always present so both layouts look identical in structure.
-	deviceW, slotW, modelW, serialW := 14, 14, 20, 0
-	calcFixed := func() int {
-		return 22 + deviceW + slotW + modelW
-	}
-	serialW = usable - calcFixed()
-	if serialW < 12 {
-		deviceW, slotW, modelW = 12, 8, 16
-		serialW = usable - calcFixed()
-	}
-	if serialW < 10 {
-		serialW = 10
-	}
-	if serialW > 60 {
-		serialW = 60
-	}
-	lineWidth := calcFixed() + serialW
+	// One fixed layout for every console (BIOS, UEFI, 80 or 128 columns).
+	// Keep it within 80 columns; long fields are truncated.
+	const (
+		deviceW   = 12
+		slotW     = 8
+		modelW    = 18
+		serialW   = 18
+		lineWidth = 22 + deviceW + slotW + modelW + serialW
+	)
 
 	printHeader := func(page, total int) {
 		title := fmt.Sprintf("DISKS (%d/%d)", page, total)
