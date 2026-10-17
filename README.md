@@ -24,7 +24,7 @@
 
 修改网络配置前会备份到 `/var/backups/netcfg`；如果新配置应用失败，会自动恢复并重新应用旧配置。RHEL 的 ifcfg 重写会保留 `UUID`、`HWADDR`、`MTU`、`ETHTOOL_OPTS` 等非网络地址字段。
 
-菜单 3 同时支持 LSI MegaRAID（`perccli`/`storcli`）和 **HP Smart Array**（`ssacli`/`hpssacli`/`hpacucli`）。HP 卡通常把物理盘隐藏在逻辑卷后面，菜单会通过 `ssacli ctrl all show config detail` 把逻辑卷映射回物理盘位，例如 `sda [SYS] ... SLOT 02,04,06`。磁盘页每页显示 5 块盘，按 Enter 翻页、输入 `q` 退出；每块盘分两行显示，避免控制台宽度不足时串行。
+菜单 3 同时支持 LSI MegaRAID（`perccli`/`storcli`）和 **HP Smart Array**（`ssacli`/`hpssacli`/`hpacucli`）。HP 卡通常把物理盘隐藏在逻辑卷后面，菜单会通过 `ssacli ctrl all show config detail` 把逻辑卷映射回物理盘位，例如 `sda [SYS] ... SLOT 02,04,06`。磁盘页每页显示 5 块盘，按 Enter 翻页、输入 `q` 退出；宽终端用单行完整表格，窄终端自动切成两行避免换行错位。
 
 ## 快速安装
 

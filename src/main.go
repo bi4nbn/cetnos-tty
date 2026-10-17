@@ -2411,6 +2411,31 @@ func truncateStr(s string, n int) string {
 	return s[:n-3] + "..."
 }
 
+// getTTYSize returns the terminal size. When stdout is not a tty (pipes,
+// tests), COLUMNS is used as a fallback.
+func getTTYSize() (rows, cols int) {
+	var ws struct {
+		Row, Col, Xpixel, Ypixel uint16
+	}
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, os.Stdout.Fd(),
+		uintptr(0x5413), uintptr(unsafe.Pointer(&ws)))
+	if errno == 0 {
+		rows, cols = int(ws.Row), int(ws.Col)
+	}
+	if cols <= 0 {
+		if v, err := strconv.Atoi(os.Getenv("COLUMNS")); err == nil {
+			cols = v
+		}
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+	if cols <= 0 {
+		cols = 80
+	}
+	return
+}
+
 func showDisks() {
 	fmt.Print("\033[2J\033[H")
 	syslist := systemDisks()
@@ -2541,12 +2566,12 @@ func showDisks() {
 			}
 		}
 		rows = append(rows, diskRow{
-			display: truncateStr(display, 16),
+			display: display,
 			size:    size,
-			dt:      truncateStr(dt, 9),
-			model:   truncateStr(model, 20),
-			slot:    truncateStr(slot, 16),
-			serial:  truncateStr(serial, 68),
+			dt:      dt,
+			model:   model,
+			slot:    slot,
+			serial:  serial,
 		})
 	}
 
@@ -2555,11 +2580,52 @@ func showDisks() {
 	if totalPages == 0 {
 		totalPages = 1
 	}
+
+	_, cols := getTTYSize()
+	usable := cols - 2
+	if usable < 40 {
+		usable = 78
+	}
+	// Wide terminals get a single-line table with the serial included. Narrow
+	// terminals keep the two-line form so the serial never wraps.
+	compact := usable >= 110
+	deviceW, slotW, modelW, serialW, lineWidth := 16, 16, 20, 0, 73
+	if compact {
+		deviceW, slotW, modelW = 14, 14, 20
+		fixed := 2 + deviceW + 1 + 6 + 1 + 9 + 1 + slotW + 1 + modelW + 1
+		serialW = usable - fixed
+		if serialW < 24 {
+			compact = false
+		} else {
+			if serialW > 60 {
+				serialW = 60
+			}
+			lineWidth = fixed + serialW
+		}
+	}
+	if !compact {
+		deviceW, slotW, modelW = 16, 16, 20
+		lineWidth = 73
+	}
+
 	printHeader := func(page, total int) {
-		fmt.Printf("========================== DISKS (%d/%d) ==========================\n", page, total)
+		title := fmt.Sprintf("DISKS (%d/%d)", page, total)
+		pad := lineWidth - len(title) - 2
+		if pad < 0 {
+			pad = 0
+		}
+		left := pad / 2
+		right := pad - left
+		fmt.Printf("%s %s %s\n", strings.Repeat("=", left), title, strings.Repeat("=", right))
 		fmt.Println()
-		fmt.Printf("  %-16s %-6s %-9s %-16s %s\n", "DEVICE", "SIZE", "TYPE", "SLOT", "MODEL")
-		fmt.Println("  " + strings.Repeat("-", 70))
+		if compact {
+			fmt.Printf("  %-*s %-6s %-9s %-*s %-*s %s\n",
+				deviceW, "DEVICE", "SIZE", "TYPE", slotW, "SLOT", modelW, "MODEL", "SERIAL")
+		} else {
+			fmt.Printf("  %-*s %-6s %-9s %-*s %s\n",
+				deviceW, "DEVICE", "SIZE", "TYPE", slotW, "SLOT", "MODEL")
+		}
+		fmt.Println("  " + strings.Repeat("-", lineWidth-2))
 	}
 
 	if len(rows) == 0 {
@@ -2578,9 +2644,24 @@ func showDisks() {
 			}
 			for i := start; i < end; i++ {
 				r := rows[i]
-				fmt.Printf("  %-16s %-6s %-9s %-16s %s\n", r.display, r.size, r.dt, r.slot, r.model)
+				if compact {
+					fmt.Printf("  %-*s %-6s %-9s %-*s %-*s %s\n",
+						deviceW, truncateStr(r.display, deviceW),
+						r.size,
+						truncateStr(r.dt, 9),
+						slotW, truncateStr(r.slot, slotW),
+						modelW, truncateStr(r.model, modelW),
+						truncateStr(r.serial, serialW))
+					continue
+				}
+				fmt.Printf("  %-*s %-6s %-9s %-*s %s\n",
+					deviceW, truncateStr(r.display, deviceW),
+					r.size,
+					truncateStr(r.dt, 9),
+					slotW, truncateStr(r.slot, slotW),
+					truncateStr(r.model, modelW))
 				if r.serial != "" {
-					fmt.Printf("    SN   %s\n", r.serial)
+					fmt.Printf("    SN   %s\n", truncateStr(r.serial, 68))
 				}
 			}
 			if page+1 < totalPages {
@@ -2594,7 +2675,7 @@ func showDisks() {
 			}
 		}
 	}
-	fmt.Println(strings.Repeat("=", 72))
+	fmt.Println(strings.Repeat("=", lineWidth))
 	pause()
 }
 
