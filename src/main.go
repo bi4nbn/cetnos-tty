@@ -2799,10 +2799,18 @@ func showDisks() {
 					truncateStr(r.dt, 9),
 					slotW, truncateStr(r.slot, slotW),
 					truncateStr(serial, serialW))
-				for _, ch := range r.children {
-					// Indent child rows one level and keep the branch line
-					// continuous; the remaining columns stay aligned.
-					prefix := "  |--"
+				// Standard tree for wide consoles; fall back to ASCII on a
+				// plain vt100/serial terminal where box drawing may not exist.
+				branch, lastBranch := "├─", "└─"
+				term := os.Getenv("TERM")
+				if term == "vt100" || term == "dumb" || term == "" {
+					branch, lastBranch = "|-", "`-"
+				}
+				for ci, ch := range r.children {
+					prefix := "  " + branch
+					if ci == len(r.children)-1 {
+						prefix = "  " + lastBranch
+					}
 					childSlot := ch.slot
 					if childSlot == "" {
 						childSlot = "-"
@@ -2819,12 +2827,14 @@ func showDisks() {
 					if childSerial == "" {
 						childSerial = "-"
 					}
-					fmt.Printf("  %-*s %-6s %-9s %-*s %s\n",
-						deviceW, prefix,
+					// Slot is shown in the tree branch; there is no separate
+					// SLOT column on a child line, leaving more room for serial.
+					label := truncateStr(prefix+" "+childSlot, deviceW)
+					fmt.Printf("  %-*s %-6s %-9s %s\n",
+						deviceW, label,
 						childSize,
 						truncateStr(childType, 9),
-						slotW, truncateStr(childSlot, slotW),
-						truncateStr(childSerial, serialW))
+						truncateStr(childSerial, 45))
 				}
 			}
 			if page+1 < totalPages {
