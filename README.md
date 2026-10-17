@@ -17,9 +17,12 @@
 | 5 | 重启 |
 | 6 | 关机 |
 | 7 | 进入系统（agetty 账号密码登录，退出自动回菜单） |
+| 8 | 在线更新（优先 curl，其次 wget；需要网络） |
 | `666` | 隐藏：免密进入 root shell（菜单不显示） |
 
 任意输入框按 `Ctrl+C` / `ESC` 回主菜单。
+
+修改网络配置前会备份到 `/var/backups/netcfg`；如果新配置应用失败，会自动恢复并重新应用旧配置。RHEL 的 ifcfg 重写会保留 `UUID`、`HWADDR`、`MTU`、`ETHTOOL_OPTS` 等非网络地址字段。
 
 ## 快速安装
 
@@ -29,7 +32,12 @@ curl -fsSL https://bash.niteng.net/iso/tty.sh | bash
 
 自动完成：下载二进制、安装 systemd unit、关闭 sysrq。装完即跑在 tty1。
 
-已安装的机器跑同一条命令即可更新。
+已安装的机器可以跑同一条命令更新，也可以直接在控制台菜单按 `8` 更新。
+
+安装脚本支持两个环境变量：
+
+- `LINUX_TTY_TARGET=tty1`：安装/重启哪个 tty 实例（默认 `tty1`）
+- `LINUX_TTY_NO_RESTART=1`：只安装二进制，不重启服务（菜单 8 使用，由菜单自己重启当前 tty）
 
 ## 手动部署
 
@@ -82,26 +90,36 @@ systemctl enable --now linux-tty@tty1.service
 启动时读 `/etc/os-release` 自动探测发行版：
 
 - **RHEL 系**（CentOS/RHEL/Rocky/Alma/Fedora）：写 `/etc/sysconfig/network-scripts/ifcfg-*`，`nmcli` 生效。
-- **Debian 系**（Debian/Ubuntu/Kali）：netplan 或 `/etc/network/interfaces`，自动识别。
+- **Debian 系**（Debian/Ubuntu/Kali）：netplan 或 `/etc/network/interfaces`，自动识别；netplan 会保留原有的 `renderer`（networkd/NetworkManager）。
 
-bond 主接口（`/sys/class/net/<nic>/bonding`）也显示 IP。
+bond/bridge/VLAN/team/OVS 主接口或其成员接口会被拒绝修改，避免破坏堆叠网络配置。bond 主接口（`/sys/class/net/<nic>/bonding`）的 IP 会显示在菜单顶部。
 
 ## 编译
 
 ```bash
-# Windows
+# Windows（自动递增 patch 版本并写 VERSION）
 .\build.ps1
 
-# Linux/macOS
+# Linux/macOS（手动指定版本号）
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=vX.Y.Z" -o linux-tty .
 ```
 
-纯静态，无外部依赖，x86_64，约 2.4 MB。版本号编译时自动递增。
+静态链接、无第三方 Go 依赖，x86_64，约 2.5 MB。运行时仍会调用系统自带的 `ip`、`nmcli`/`ifupdown`/`netplan`、`udevadm`、`lscpu`、`ping`、`agetty` 等命令；最小化系统如果缺少这些工具，对应功能会降级或报错。
+
+版本号只在 `build.ps1` 中自动递增；Linux 构建命令需要手动传入。
+
+单元测试：
+
+```bash
+cd src && go test ./...
+```
 
 ## 安全
 
 - 二进制 `0700 root:root`，必须 root 运行。
 - `666` 是隐藏免密 root 入口，物理控制台任何人输入即得 root，**仅在物理访问受控的设备上启用**；不需要时删掉 `/usr/local/sbin/linux-root-shell` 即可关闭。
+- 菜单 8 会以 root 执行从 `bash.niteng.net` 下载的安装脚本；无法访问该地址的环境请改用 U 盘/离线安装。
+- 安装脚本会保留上一版二进制为 `/usr/local/sbin/linux-tty.bak`，新版本启动失败时可用于回滚。
 
 ## 卸载
 
@@ -109,7 +127,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=v
 systemctl disable --now linux-tty@tty1.service
 rm -f /etc/systemd/system/linux-tty@.service
 rm -f /usr/local/sbin/linux-root-shell
-rm -f /usr/local/sbin/linux-tty
+rm -f /usr/local/sbin/linux-tty /usr/local/sbin/linux-tty.bak
 rm -f /etc/sysctl.d/99-linux-tty.conf
+rm -f /etc/netplan/99-linux-tty.yaml
 systemctl daemon-reload
 ```
+
+网络配置文件不会自动还原，需要时从 `/var/backups/netcfg` 手动恢复。

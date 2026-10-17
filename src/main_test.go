@@ -1,0 +1,225 @@
+package main
+
+import (
+	"net"
+	"strings"
+	"testing"
+)
+
+func TestSuggestGateway(t *testing.T) {
+	mask24 := net.CIDRMask(24, 32)
+	tests := []struct {
+		ip   string
+		mask net.IPMask
+		want string
+	}{
+		{"192.168.1.1", mask24, "192.168.1.2"},
+		{"192.168.1.2", mask24, "192.168.1.1"},
+		{"10.0.0.5", mask24, "10.0.0.1"},
+		{"192.168.1.1", net.CIDRMask(30, 32), "192.168.1.2"},
+		{"192.168.1.2", net.CIDRMask(30, 32), "192.168.1.1"},
+		{"192.168.1.1", net.CIDRMask(31, 32), ""},
+		{"192.168.1.1", net.CIDRMask(32, 32), ""},
+	}
+	for _, tt := range tests {
+		ip := net.ParseIP(tt.ip).To4()
+		if got := suggestGateway(ip, tt.mask); got != tt.want {
+			t.Errorf("suggestGateway(%s, %v) = %q, want %q", tt.ip, tt.mask, got, tt.want)
+		}
+	}
+}
+
+func TestMaskHelpers(t *testing.T) {
+	for _, prefix := range []int{1, 8, 16, 24, 27, 30, 32} {
+		mask := net.ParseIP(prefixToMask(prefix))
+		if mask == nil || maskSize(mask) != prefix {
+			t.Fatalf("prefixToMask/maskSize round trip failed for /%d", prefix)
+		}
+	}
+	if netmaskIsValid("255.0.255.0") {
+		t.Error("non-contiguous netmask accepted")
+	}
+	if netmaskIsValid("255.255.255.0") != true {
+		t.Error("valid netmask rejected")
+	}
+	if netmaskIsValid("0.0.0.0") {
+		t.Error("0.0.0.0 accepted as netmask")
+	}
+}
+
+func TestParseResolvConf(t *testing.T) {
+	data := "# comment\nnameserver 8.8.8.8\nnameserver 127.0.0.53\nnameserver 127.0.0.1\nnameserver 2001:db8::1\nnameserver ::1\nnameserver 0.0.0.0\n"
+	got := parseResolvConf(data)
+	want := []string{"8.8.8.8", "127.0.0.1", "2001:db8::1"}
+	if len(got) != len(want) {
+		t.Fatalf("parseResolvConf = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("parseResolvConf = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestMergeIfcfg(t *testing.T) {
+	old := "UUID=abc\nHWADDR=00:11:22:33:44:55\nMTU=9000\nIPADDR=1.2.3.4\nNETMASK=255.255.255.0\nDNS1=8.8.8.8\n"
+	base := "TYPE=Ethernet\nBOOTPROTO=static\nIPADDR=10.0.0.5\nNETMASK=255.255.255.0\n"
+	got := mergeIfcfg(old, base, false)
+	for _, keep := range []string{"UUID=abc", "HWADDR=00:11:22:33:44:55", "MTU=9000", "IPADDR=10.0.0.5"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("merged ifcfg lost %q:\n%s", keep, got)
+		}
+	}
+	for _, drop := range []string{"IPADDR=1.2.3.4", "DNS1=8.8.8.8"} {
+		if strings.Contains(got, drop) {
+			t.Errorf("merged ifcfg kept managed key %q:\n%s", drop, got)
+		}
+	}
+}
+
+func TestIfcfgSpecialReason(t *testing.T) {
+	for _, text := range []string{
+		"TYPE=Bond\nBONDING_OPTS=mode=active-backup\n",
+		"MASTER=bond0\nSLAVE=yes\n",
+		"VLAN=yes\n",
+		"TYPE=Bridge\n",
+		"TYPE=OVSPort\n",
+	} {
+		if ifcfgSpecialReason(text) == "" {
+			t.Errorf("ifcfgSpecialReason(%q) = empty, want special", text)
+		}
+	}
+	if ifcfgSpecialReason("TYPE=Ethernet\nBOOTPROTO=dhcp\n") != "" {
+		t.Error("normal Ethernet ifcfg flagged as special")
+	}
+}
+
+func TestInterfacesSpecialReason(t *testing.T) {
+	text := `auto lo
+iface lo inet loopback
+
+auto br0
+iface br0 inet static
+    bridge_ports eth0
+
+auto eth0
+iface eth0 inet static
+    address 10.0.0.5/24
+`
+	if got := interfacesSpecialReason(text, "br0"); got == "" {
+		t.Error("bridge master not detected")
+	}
+	if got := interfacesSpecialReason(text, "eth0"); got == "" {
+		t.Error("bridge member not detected")
+	}
+	if got := interfacesSpecialReason(text, "lo"); got != "" {
+		t.Error("loopback flagged as special")
+	}
+}
+
+func TestNetplanSpecialReasonText(t *testing.T) {
+	text := `network:
+  version: 2
+  ethernets:
+    eth0:
+      dhcp4: true
+    eth1:
+      dhcp4: true
+  bonds:
+    bond0:
+      interfaces: [eth0, eth1]
+      parameters:
+        mode: active-backup
+`
+	if got := netplanSpecialReasonText(text, "bond0"); got == "" {
+		t.Error("bond master not detected")
+	}
+	if got := netplanSpecialReasonText(text, "eth0"); got == "" {
+		t.Error("bond member not detected")
+	}
+	if got := netplanSpecialReasonText(text, "eth9"); got != "" {
+		t.Error("unrelated NIC flagged as special")
+	}
+}
+
+func TestScanNetplanRenderer(t *testing.T) {
+	global := `network:
+  version: 2
+  renderer: NetworkManager
+  ethernets:
+    eth0:
+      dhcp4: true
+`
+	g, p := scanNetplanRenderer(global, "eth0")
+	if g != "NetworkManager" || p != "" {
+		t.Errorf("global renderer = %q/%q, want NetworkManager/empty", g, p)
+	}
+
+	perNIC := `network:
+  version: 2
+  ethernets:
+    eth0:
+      renderer: networkd
+      dhcp4: true
+`
+	g, p = scanNetplanRenderer(perNIC, "eth0")
+	if g != "" || p != "networkd" {
+		t.Errorf("per-NIC renderer = %q/%q, want empty/networkd", g, p)
+	}
+}
+
+func TestNormalizeNetplanRenderer(t *testing.T) {
+	if normalizeNetplanRenderer("NetworkManager") != "NetworkManager" {
+		t.Error("NetworkManager not normalized")
+	}
+	if normalizeNetplanRenderer("networkd") != "networkd" {
+		t.Error("networkd not normalized")
+	}
+	if normalizeNetplanRenderer("bogus") != "" {
+		t.Error("unknown renderer accepted")
+	}
+}
+
+func TestDebianStanzaExtras(t *testing.T) {
+	text := `iface eth0 inet static
+    address 10.0.0.5
+    netmask 255.255.255.0
+    mtu 9000
+    dns-nameservers 8.8.8.8
+    up ip link set $IFACE up
+`
+	extras := debianStanzaExtras(text, "eth0")
+	joined := strings.Join(extras, "\n")
+	if !strings.Contains(joined, "mtu 9000") || !strings.Contains(joined, "up ip link") {
+		t.Errorf("extras = %q, want mtu and up hook", joined)
+	}
+	if strings.Contains(joined, "address") || strings.Contains(joined, "dns-nameservers") {
+		t.Errorf("extras kept managed directives: %q", joined)
+	}
+}
+
+func TestIsVTConsole(t *testing.T) {
+	for _, tty := range []string{"tty1", "tty12"} {
+		if !isVTConsole(tty) {
+			t.Errorf("isVTConsole(%q) = false", tty)
+		}
+	}
+	for _, tty := range []string{"", "ttyS0", "ttyAMA0", "pts/0"} {
+		if isVTConsole(tty) {
+			t.Errorf("isVTConsole(%q) = true", tty)
+		}
+	}
+}
+
+func TestValidTTYName(t *testing.T) {
+	for _, tty := range []string{"tty1", "ttyS0", "hvc0", "ttyUSB0"} {
+		if !validTTYName(tty) {
+			t.Errorf("validTTYName(%q) = false", tty)
+		}
+	}
+	for _, tty := range []string{"", "pts/0", "tty1;rm", "tty 1"} {
+		if validTTYName(tty) {
+			t.Errorf("validTTYName(%q) = true", tty)
+		}
+	}
+}

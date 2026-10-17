@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -35,6 +36,7 @@ var (
 	stdinIsTty  = false
 	eofFlag     atomic.Bool
 	origTermios *termios
+	origSysrq   []byte
 	netBackend  = "rhel" // "rhel" = ifcfg+nmcli, "debian" = /etc/network/interfaces, "netplan" = /etc/netplan
 )
 
@@ -147,7 +149,31 @@ func readFileTrim(p string) string {
 	return strings.TrimSpace(string(b))
 }
 
-// ---------- signal handling ----------
+// ---------- signal handling / cleanup ----------
+
+// disableSysrq remembers the original sysrq value (once) and turns sysrq off
+// while the menu is in control. restoreSysrq writes the saved value back.
+func disableSysrq() {
+	if orig, err := os.ReadFile("/proc/sys/kernel/sysrq"); err == nil {
+		if origSysrq == nil {
+			origSysrq = orig
+		}
+		os.WriteFile("/proc/sys/kernel/sysrq", []byte("0"), 0644)
+	}
+}
+
+func restoreSysrq() {
+	if origSysrq != nil {
+		os.WriteFile("/proc/sys/kernel/sysrq", origSysrq, 0644)
+	}
+}
+
+// cleanup restores the terminal and sysrq. Signal handlers must use this
+// instead of os.Exit after only exitCbreak: os.Exit skips deferred calls.
+func cleanup() {
+	exitCbreak()
+	restoreSysrq()
+}
 
 func initSignals() {
 	ch := make(chan os.Signal, 16)
@@ -157,10 +183,10 @@ func initSignals() {
 			if s == os.Interrupt {
 				interrupt.Store(1)
 			} else if s == syscall.SIGTERM {
-				exitCbreak()
+				cleanup()
 				os.Exit(143)
 			} else if s == syscall.SIGHUP {
-				exitCbreak()
+				cleanup()
 				os.Exit(0)
 			}
 		}
@@ -260,7 +286,14 @@ func ask(prompt string) (string, bool) {
 			continue
 		}
 		if n == 0 {
-			continue // timeout (VMIN=0,VTIME=2): poll again
+			// On a real tty with VMIN=0/VTIME=2 this is just a 200ms poll.
+			// A non-tty stdin (e.g. /dev/null) returns (0, nil) immediately;
+			// treat that as EOF instead of spinning at 100% CPU.
+			if !stdinIsTty {
+				eofFlag.Store(true)
+				return "", false
+			}
+			continue
 		}
 		c := readBuf[0]
 		switch c {
@@ -320,6 +353,26 @@ func isVTConsole(tty string) bool {
 	}
 	for _, r := range rest {
 		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// validTTYName accepts names that are safe to embed in a systemd instance
+// name (tty1, ttyS0, hvc0, ...). Pseudo-terminals contain '/' and are
+// rejected; the update path refuses to guess which unit to restart.
+func validTTYName(tty string) bool {
+	if tty == "" {
+		return false
+	}
+	for _, r := range tty {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '.' || r == '-':
+		default:
 			return false
 		}
 	}
@@ -433,6 +486,436 @@ func detectDistro() {
 	netBackend = "rhel"
 }
 
+// ---------- shared config helpers ----------
+
+// writeFileAtomic writes content to path via a same-directory temp file and
+// rename, so a failed/partial write never leaves a half-written ifcfg or
+// netplan file behind.
+func writeFileAtomic(path, content string, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".linux-tty-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
+}
+
+// usableNameserver rejects entries that cannot be persisted as an upstream
+// resolver. The systemd-resolved stub (127.0.0.53 / ::1) only works while the
+// local resolver is running and must not be copied into a static config.
+// Other loopback addresses (e.g. a deliberately configured local dnsmasq) are
+// kept.
+func usableNameserver(s string) bool {
+	s = strings.Trim(strings.TrimSpace(s), `"`)
+	if s == "" {
+		return false
+	}
+	ip := net.ParseIP(s)
+	if ip == nil || ip.IsUnspecified() {
+		return false
+	}
+	if ip4 := ip.To4(); ip4 != nil && ip4.Equal(net.IPv4(127, 0, 0, 53)) {
+		return false
+	}
+	if ip.Equal(net.IPv6loopback) {
+		return false
+	}
+	return true
+}
+
+func parseResolvConf(data string) []string {
+	var out []string
+	for _, line := range strings.Split(data, "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "nameserver" && usableNameserver(f[1]) {
+			out = append(out, strings.Trim(f[1], `"`))
+		}
+	}
+	return out
+}
+
+// readResolvConfDNS returns real upstream nameservers. When /etc/resolv.conf
+// only contains the systemd-resolved stub, the upstream file written by
+// resolved is used as a fallback.
+func readResolvConfDNS() []string {
+	var out []string
+	for _, path := range []string{"/etc/resolv.conf", "/run/systemd/resolve/resolv.conf"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		out = append(out, parseResolvConf(string(data))...)
+		if len(out) > 0 {
+			break
+		}
+	}
+	return dedupeStrings(out)
+}
+
+func dedupeStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+var dnsLineRe = regexp.MustCompile(`(?i)^DNS[0-9]+=(\S+)$`)
+
+var ifcfgBadKeys = regexp.MustCompile(`(?im)^\s*(SLAVE|MASTER|BONDING_OPTS|BONDING_SLAVE|VLAN|VLAN_ID|BRIDGE|BRIDGE_MASTER|TEAM_MASTER|TEAM_PORT_CONFIG|OVS_BRIDGE|OVS_PORT|OVS_OPTIONS)\s*=`)
+
+var ifcfgBadType = regexp.MustCompile(`(?im)^\s*TYPE\s*=\s*"?(Vlan|Bridge|Bond|Team|IPSEC|IPIP|GRE|OVSPort|OVSBridge|OVSIntPort|OVSBond)\b`)
+
+func ifcfgSpecialReason(text string) string {
+	if ifcfgBadKeys.MatchString(text) {
+		return "bond/VLAN/bridge/team/OVS member"
+	}
+	if ifcfgBadType.MatchString(text) {
+		return "bond/VLAN/bridge/team/OVS interface"
+	}
+	return ""
+}
+
+// ifcfgManagedKey reports whether a key is owned by this menu and must be
+// dropped from the old file before merging. Everything else (UUID, HWADDR,
+// MTU, ETHTOOL_OPTS, IPV6*, ...) is preserved.
+func ifcfgManagedKey(key string, dhcp bool) bool {
+	key = strings.ToUpper(strings.TrimSpace(key))
+	switch key {
+	case "TYPE", "BOOTPROTO", "NAME", "DEVICE", "ONBOOT", "NM_CONTROLLED", "PEERDNS":
+		return true
+	}
+	for _, prefix := range []string{"IPADDR", "NETMASK", "PREFIX", "GATEWAY", "DNS"} {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	if dhcp {
+		switch key {
+		case "DEFROUTE", "IPV4_FAILURE_FATAL":
+			return true
+		}
+	}
+	return false
+}
+
+func mergeIfcfg(old, base string, dhcp bool) string {
+	if strings.TrimSpace(old) == "" {
+		return base
+	}
+	var extras []string
+	for _, line := range strings.Split(strings.ReplaceAll(old, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		key := trimmed
+		if i := strings.Index(key, "="); i >= 0 {
+			key = key[:i]
+		}
+		if ifcfgManagedKey(key, dhcp) {
+			continue
+		}
+		extras = append(extras, line)
+	}
+	if len(extras) == 0 {
+		return base
+	}
+	return strings.TrimRight(base, "\n") + "\n" + strings.Join(extras, "\n") + "\n"
+}
+
+// interfacesSpecialReason detects bond/bridge/VLAN/team/OVS stanzas in
+// /etc/network/interfaces, both for the master and for a member port.
+func interfacesSpecialReason(text, nic string) string {
+	cur := ""
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		switch f[0] {
+		case "iface":
+			if len(f) >= 2 {
+				cur = f[1]
+			} else {
+				cur = ""
+			}
+			continue
+		case "auto", "allow-hotplug", "source", "mapping", "rename":
+			cur = ""
+			continue
+		}
+		if cur == nic {
+			switch f[0] {
+			case "bridge_ports", "bridge-stp", "bridge-vlan-aware", "bond-slaves",
+				"bond-master", "bond-mode", "vlan-raw-device", "team-ports",
+				"ovs_type", "ovs_bridge", "ovs_ports":
+				return "bond/VLAN/bridge/team/OVS configuration"
+			}
+		}
+		if len(f) >= 2 {
+			switch f[0] {
+			case "bridge_ports", "bond-slaves", "team-ports", "ovs_ports":
+				for _, x := range f[1:] {
+					if x == nic {
+						return "member of another interface"
+					}
+				}
+			case "vlan-raw-device":
+				if f[1] == nic {
+					return "VLAN parent"
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func yamlListHas(s, nic string) bool {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "[")
+	s = strings.TrimSuffix(s, "]")
+	for _, f := range strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == '[' || r == ']' || r == ' ' || r == '\t'
+	}) {
+		if strings.Trim(f, `"'`) == nic {
+			return true
+		}
+	}
+	return false
+}
+
+func netplanSpecialReasonText(content, nic string) string {
+	section, device := "", ""
+	for _, raw := range strings.Split(content, "\n") {
+		line := raw
+		if i := strings.Index(line, "#"); i >= 0 {
+			line = line[:i]
+		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		trimmed := strings.TrimSpace(line)
+		if indent == 2 && strings.HasSuffix(trimmed, ":") {
+			section = strings.Trim(strings.TrimSuffix(trimmed, ":"), `"'`)
+			device = ""
+			continue
+		}
+		if indent == 4 && strings.HasSuffix(trimmed, ":") {
+			device = strings.Trim(strings.TrimSuffix(trimmed, ":"), `"'`)
+			if device == nic {
+				switch section {
+				case "bonds", "bridges", "vlans", "teams":
+					return section + " interface"
+				}
+			}
+			continue
+		}
+		if section == "openvswitch" {
+			if yamlListHas(trimmed, nic) {
+				return "Open vSwitch interface"
+			}
+			continue
+		}
+		if section != "bonds" && section != "bridges" && section != "teams" {
+			if section == "vlans" && device != "" && strings.HasPrefix(trimmed, "link:") {
+				v := strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "link:")), `"'`)
+				if v == nic {
+					return "VLAN parent"
+				}
+			}
+			continue
+		}
+		key, val := trimmed, ""
+		if i := strings.Index(key, ":"); i >= 0 {
+			val = strings.TrimSpace(key[i+1:])
+			key = strings.TrimSpace(key[:i])
+		}
+		switch key {
+		case "interfaces", "ports":
+			if yamlListHas(val, nic) {
+				return "member of " + section
+			}
+		case "-":
+			if yamlListHas(trimmed, nic) {
+				return "member of " + section
+			}
+		default:
+			if strings.HasPrefix(trimmed, "-") && yamlListHas(trimmed, nic) {
+				return "member of " + section
+			}
+		}
+	}
+	return ""
+}
+
+// netplanRendererFor returns the renderer already used for nic, or the global
+// renderer of the newest netplan file. This prevents switching an Ubuntu
+// NetworkManager system to networkd just because we wrote a 99-*.yaml file.
+func scanNetplanRenderer(content, nic string) (global, perNIC string) {
+	device := ""
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimRight(raw, "\r")
+		if i := strings.Index(line, "#"); i >= 0 {
+			line = line[:i]
+		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		trimmed := strings.TrimSpace(line)
+		if indent == 4 && strings.HasSuffix(trimmed, ":") {
+			device = strings.Trim(strings.TrimSuffix(trimmed, ":"), `"'`)
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "renderer:") {
+			continue
+		}
+		val := strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "renderer:")), `"'`)
+		if val == "" {
+			continue
+		}
+		if indent <= 2 {
+			global = val
+		} else if indent >= 6 && device == nic {
+			perNIC = val
+		}
+	}
+	return
+}
+
+func normalizeNetplanRenderer(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "networkmanager":
+		return "NetworkManager"
+	case "networkd":
+		return "networkd"
+	}
+	return ""
+}
+
+func netplanRendererFor(nic string) string {
+	entries, err := os.ReadDir("/etc/netplan")
+	if err != nil {
+		return ""
+	}
+	global, perNIC := "", ""
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || (!strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml")) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join("/etc/netplan", name))
+		if err != nil {
+			continue
+		}
+		g, p := scanNetplanRenderer(string(data), nic)
+		if g != "" {
+			global = g
+		}
+		if p != "" {
+			perNIC = p
+		}
+	}
+	if perNIC != "" {
+		return normalizeNetplanRenderer(perNIC)
+	}
+	return normalizeNetplanRenderer(global)
+}
+
+// specialNICReason refuses to rewrite stacked interfaces. The menu only knows
+// how to configure plain Ethernet NICs; overwriting a bond/bridge/VLAN/team/
+// OVS member destroys the stack configuration.
+func specialNICReason(nic string) string {
+	if nic == "" {
+		return ""
+	}
+	base := "/sys/class/net/" + nic
+	if _, err := os.Stat(base + "/bonding"); err == nil {
+		return "bond master"
+	}
+	if _, err := os.Stat(base + "/bridge"); err == nil {
+		return "bridge"
+	}
+	if _, err := os.Stat(base + "/team"); err == nil {
+		return "team master"
+	}
+	if _, err := os.Stat("/proc/net/vlan/" + nic); err == nil {
+		return "VLAN"
+	}
+	if link, err := os.Readlink(base + "/master"); err == nil {
+		return "member of " + filepath.Base(link)
+	}
+	switch netBackend {
+	case "rhel":
+		if data, err := os.ReadFile(filepath.Join(ifcfgDir, "ifcfg-"+nic)); err == nil {
+			if r := ifcfgSpecialReason(string(data)); r != "" {
+				return r
+			}
+		}
+	case "debian":
+		paths := []string{interfacesF}
+		if entries, err := os.ReadDir("/etc/network/interfaces.d"); err == nil {
+			for _, e := range entries {
+				if !e.IsDir() {
+					paths = append(paths, filepath.Join("/etc/network/interfaces.d", e.Name()))
+				}
+			}
+		}
+		for _, path := range paths {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			if r := interfacesSpecialReason(string(data), nic); r != "" {
+				return r
+			}
+		}
+	case "netplan":
+		entries, err := os.ReadDir("/etc/netplan")
+		if err != nil {
+			break
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() || (!strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml")) {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join("/etc/netplan", name))
+			if err != nil {
+				continue
+			}
+			if r := netplanSpecialReasonText(string(data), nic); r != "" {
+				return r
+			}
+		}
+	}
+	return ""
+}
+
 // ---------- Debian /etc/network/interfaces backend ----------
 
 // debianBackupIface backs up the interfaces file before rewriting.
@@ -515,7 +998,46 @@ func debianRewriteBlock(nic, block string) error {
 		out = out[:len(out)-1]
 	}
 	final := strings.Join(out, "\n") + "\n"
-	return os.WriteFile(interfacesF, []byte(final), 0644)
+	return writeFileAtomic(interfacesF, final, 0644)
+}
+
+// debianStanzaExtras returns the options of the existing iface stanza for nic
+// that the menu does not manage (mtu, hwaddress, up/down hooks, ...). They are
+// appended to the new stanza so switching dhcp/static does not silently drop
+// unrelated settings.
+func debianStanzaExtras(text, nic string) []string {
+	var extras []string
+	inStanza := false
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimRight(raw, "\r")
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "iface ") {
+			f := strings.Fields(trimmed)
+			inStanza = len(f) >= 2 && f[1] == nic
+			continue
+		}
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			inStanza = false
+			continue
+		}
+		if !inStanza {
+			continue
+		}
+		f := strings.Fields(trimmed)
+		if len(f) == 0 {
+			continue
+		}
+		switch f[0] {
+		case "address", "netmask", "gateway", "dns-nameservers", "dns-search",
+			"dns-domain", "broadcast", "network", "pointopoint":
+			continue
+		}
+		extras = append(extras, line)
+	}
+	return extras
 }
 
 // debianWriteStatic writes a static IP stanza into /etc/network/interfaces.
@@ -534,6 +1056,11 @@ func debianWriteStatic(nic, ip, netmask, gateway, dns1, dns2 string) error {
 		}
 		block += "\n"
 	}
+	if old, err := os.ReadFile(interfacesF); err == nil {
+		for _, extra := range debianStanzaExtras(string(old), nic) {
+			block += extra + "\n"
+		}
+	}
 	return debianRewriteBlock(nic, block)
 }
 
@@ -541,6 +1068,11 @@ func debianWriteStatic(nic, ip, netmask, gateway, dns1, dns2 string) error {
 func debianWriteDHCP(nic string) error {
 	block := "auto " + nic + "\n" +
 		"iface " + nic + " inet dhcp\n"
+	if old, err := os.ReadFile(interfacesF); err == nil {
+		for _, extra := range debianStanzaExtras(string(old), nic) {
+			block += extra + "\n"
+		}
+	}
 	return debianRewriteBlock(nic, block)
 }
 
@@ -565,27 +1097,56 @@ func debianApply(nic string) {
 // netplanConfigPath is where we write our own netplan YAML.
 const netplanConfigPath = "/etc/netplan/99-linux-tty.yaml"
 
-// netplanBackup backs up existing netplan config before writing ours.
+// netplanBackup copies the current netplan files into a timestamped backup
+// directory. A directory (instead of one merged text file) makes an exact
+// rollback possible.
 func netplanBackup() string {
 	os.MkdirAll(bakDir, 0700)
 	bak := filepath.Join(bakDir, fmt.Sprintf("netplan.%s", time.Now().Format("20060102_150405")))
-	if entries, err := os.ReadDir("/etc/netplan"); err == nil {
-		var merged strings.Builder
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			data, err := os.ReadFile(filepath.Join("/etc/netplan", e.Name()))
-			if err != nil {
-				continue
-			}
-			merged.WriteString(fmt.Sprintf("# === %s ===\n", e.Name()))
-			merged.Write(data)
-			merged.WriteString("\n")
+	if err := os.MkdirAll(bak, 0700); err != nil {
+		return ""
+	}
+	entries, err := os.ReadDir("/etc/netplan")
+	if err != nil {
+		return bak
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
 		}
-		os.WriteFile(bak, []byte(merged.String()), 0600)
+		data, err := os.ReadFile(filepath.Join("/etc/netplan", e.Name()))
+		if err != nil {
+			continue
+		}
+		os.WriteFile(filepath.Join(bak, e.Name()), data, 0600)
 	}
 	return bak
+}
+
+func restoreNetplanBackup(bak string) bool {
+	if bak == "" {
+		return false
+	}
+	entries, err := os.ReadDir(bak)
+	if err != nil {
+		return false
+	}
+	// Remove our override first; if it existed before, restore it below.
+	os.Remove(netplanConfigPath)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(bak, e.Name()))
+		if err != nil {
+			continue
+		}
+		if err := writeFileAtomic(filepath.Join("/etc/netplan", e.Name()), string(data), 0600); err != nil {
+			return false
+		}
+	}
+	netplanApply()
+	return true
 }
 
 // netplanWriteStatic writes a static IP netplan YAML and applies it.
@@ -598,8 +1159,12 @@ func netplanWriteStatic(nic, ip, netmask, gateway, dns1, dns2 string) error {
 	if ones == 0 || ones > 32 {
 		return fmt.Errorf("invalid netmask prefix: %s", netmask)
 	}
+	renderer := netplanRendererFor(nic)
+	if renderer == "" {
+		renderer = "networkd"
+	}
 	prefix := strconv.Itoa(ones)
-	yaml := "network:\n  version: 2\n  renderer: networkd\n  ethernets:\n    " + nic + ":\n" +
+	yaml := "network:\n  version: 2\n  renderer: " + renderer + "\n  ethernets:\n    " + nic + ":\n" +
 		"      addresses: [" + ip + "/" + prefix + "]\n"
 	if gateway != "" {
 		yaml += "      routes:\n        - to: 0.0.0.0/0\n          via: " + gateway + "\n          on-link: true\n"
@@ -611,14 +1176,18 @@ func netplanWriteStatic(nic, ip, netmask, gateway, dns1, dns2 string) error {
 		}
 		yaml += "      nameservers:\n        addresses: [" + dnsList + "]\n"
 	}
-	return os.WriteFile(netplanConfigPath, []byte(yaml), 0600)
+	return writeFileAtomic(netplanConfigPath, yaml, 0600)
 }
 
 // netplanWriteDHCP writes a DHCP netplan YAML and applies it.
 func netplanWriteDHCP(nic string) error {
-	yaml := "network:\n  version: 2\n  renderer: networkd\n  ethernets:\n    " + nic + ":\n" +
+	renderer := netplanRendererFor(nic)
+	if renderer == "" {
+		renderer = "networkd"
+	}
+	yaml := "network:\n  version: 2\n  renderer: " + renderer + "\n  ethernets:\n    " + nic + ":\n" +
 		"      dhcp4: true\n"
-	return os.WriteFile(netplanConfigPath, []byte(yaml), 0600)
+	return writeFileAtomic(netplanConfigPath, yaml, 0600)
 }
 
 // netplanApply runs `netplan apply` and reports failures, so the operator
@@ -700,7 +1269,8 @@ func nicReady(dev string) bool {
 		good := false
 		for _, line := range strings.Split(st, "\n") {
 			ff := strings.SplitN(line, ":", 2)
-			if len(ff) == 2 && ff[0] == dev && ff[1] == "connected" {
+			// Newer NetworkManager reports "connected (externally)".
+			if len(ff) == 2 && ff[0] == dev && strings.HasPrefix(ff[1], "connected") {
 				good = true
 				break
 			}
@@ -712,15 +1282,17 @@ func nicReady(dev string) bool {
 	return true
 }
 
-func applyNic(dev, bak string) {
+// applyNic applies the config and returns whether the interface came up with
+// an IPv4 address. A false return lets the caller restore the backup.
+func applyNic(dev, bak string) bool {
 	if dev == "" {
 		fmt.Println("FAILED: no interface given.")
-		return
+		return false
 	}
 	if netBackend == "rhel" {
 		if !fileExists(filepath.Join(ifcfgDir, "ifcfg-"+dev)) {
 			fmt.Printf("FAILED: %s/ifcfg-%s is missing.\n", ifcfgDir, dev)
-			return
+			return false
 		}
 	}
 	// Cache NM state once (avoids repeated systemctl forks per retry).
@@ -739,13 +1311,11 @@ func applyNic(dev, bak string) {
 	} else {
 		fmt.Printf("Applying config on %s (ifdown/ifup) ...\n", dev)
 	}
-	i := 0
-	for i < 3 {
+	for i := 0; i < maxTries; i++ {
 		nicApply(dev)
 		if nicReady(dev) {
 			break
 		}
-		i++
 		time.Sleep(2 * time.Second)
 	}
 	if nicReady(dev) {
@@ -758,7 +1328,7 @@ func applyNic(dev, bak string) {
 			}
 		}
 		fmt.Printf("OK: %s is up (%s)\n", dev, addr)
-		return
+		return true
 	}
 	ip4, _ := run("ip", "-4", "-o", "addr", "show", dev)
 	addr := ""
@@ -774,7 +1344,7 @@ func applyNic(dev, bak string) {
 			fmt.Printf(" (backup: %s)", bak)
 		}
 		fmt.Println()
-		return
+		return false
 	}
 	// Has an IPv4 but is not "fully ready". Explain per backend.
 	if nmUp {
@@ -795,6 +1365,46 @@ func applyNic(dev, bak string) {
 		fmt.Printf(" (backup: %s)", bak)
 	}
 	fmt.Println()
+	return false
+}
+
+// rollbackConfig restores the pre-change config and re-applies it. It is only
+// called when applyNic failed, so a bad static IP does not leave the machine
+// unreachable until the next console visit.
+func rollbackConfig(bak, dev string) bool {
+	if bak == "" || dev == "" {
+		return false
+	}
+	switch netBackend {
+	case "rhel":
+		data, err := os.ReadFile(bak)
+		if err != nil {
+			return false
+		}
+		if err := writeFileAtomic(filepath.Join(ifcfgDir, "ifcfg-"+dev), string(data), 0644); err != nil {
+			return false
+		}
+		if isNMActive() {
+			nmActive.Store(1)
+		} else {
+			nmActive.Store(0)
+		}
+		nicApply(dev)
+		return true
+	case "debian":
+		data, err := os.ReadFile(bak)
+		if err != nil {
+			return false
+		}
+		if err := writeFileAtomic(interfacesF, string(data), 0644); err != nil {
+			return false
+		}
+		debianApply(dev)
+		return true
+	case "netplan":
+		return restoreNetplanBackup(bak)
+	}
+	return false
 }
 
 // ---------- static IP (formerly ip.sh) ----------
@@ -830,21 +1440,14 @@ func staticConfig() {
 	// RHEL backend requires an existing ifcfg file; Debian backend writes
 	// /etc/network/interfaces regardless of pre-existing config.
 	cfg := filepath.Join(ifcfgDir, "ifcfg-"+nic)
-	if netBackend == "rhel" {
-		if !fileExists(cfg) {
-			fmt.Printf("ERROR: %s does not exist - this tool only edits an existing ifcfg.\n", cfg)
-			return
-		}
-		// refuse bond/vlan/bridge/team
-		cfgBytes, _ := os.ReadFile(cfg)
-		cfgText := string(cfgBytes)
-		badKeys := regexp.MustCompile(`(?m)^\s*(SLAVE|MASTER|BONDING_OPTS|VLAN|BRIDGE|TEAM_MASTER)\s*=`)
-		badType := regexp.MustCompile(`(?m)^\s*TYPE\s*=\s*"?(Vlan|Bridge|Bond|Team|IPSEC|IPIP|GRE)`)
-		if badKeys.MatchString(cfgText) || badType.MatchString(cfgText) {
-			fmt.Printf("ERROR: %s is a bond/vlan/bridge/team member or a special TYPE - refusing to touch it.\n", nic)
-			fmt.Println("       Nothing was changed.")
-			return
-		}
+	if netBackend == "rhel" && !fileExists(cfg) {
+		fmt.Printf("ERROR: %s does not exist - this tool only edits an existing ifcfg.\n", cfg)
+		return
+	}
+	if reason := specialNICReason(nic); reason != "" {
+		fmt.Printf("ERROR: %s is a %s - refusing to touch it.\n", nic, reason)
+		fmt.Println("       Nothing was changed.")
+		return
 	}
 	// IP/CIDR input
 	var ipAddr, netmask string
@@ -915,16 +1518,13 @@ func staticConfig() {
 			return
 		}
 	}
-	// gateway suggestion = network+1
+	// gateway suggestion = first usable host that is not this machine
 	ip := net.ParseIP(ipAddr).To4()
 	mask := net.ParseIP(netmask).To4()
 	ipnet := net.IPNet{IP: ip, Mask: net.IPMask(mask)}
-	network := ipnet.IP.Mask(ipnet.Mask).To4()
 	prefix := maskSize(mask)
-	gwSuggest := ""
-	if prefix < 31 {
-		gwSuggest = net.IPv4(network[0], network[1], network[2], network[3]+1).To4().String()
-	} else {
+	gwSuggest := suggestGateway(ip, net.IPMask(mask))
+	if prefix >= 31 {
 		fmt.Printf("NOTE: /%d has no usable host address - no gateway is suggested.\n", prefix)
 	}
 	gateway := ""
@@ -961,6 +1561,10 @@ func staticConfig() {
 			gwOK = true
 		default:
 			if isValidIPv4(v) {
+				if v == ipAddr {
+					fmt.Printf("  Gateway cannot be the interface IP itself - try again (%d/%d).\n", t+1, maxTries)
+					continue
+				}
 				gateway = v
 				gwOK = true
 			} else {
@@ -981,45 +1585,28 @@ func staticConfig() {
 			fmt.Printf("WARNING: gateway %s is not in %s/%s - the default route may not work.\n", gateway, ipAddr, netmask)
 		}
 	}
-	// DNS: preserve existing
-	existingDNS := []string{}
-	if rc, _ := os.ReadFile("/etc/resolv.conf"); rc == nil {
-		for _, line := range strings.Split(string(rc), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "nameserver") {
-				f := strings.Fields(line)
-				if len(f) >= 2 {
-					existingDNS = append(existingDNS, strings.Trim(f[1], "\""))
-				}
-			}
-		}
-	}
-	// RHEL backend: also read DNS entries from the existing ifcfg file
+	// DNS: preserve the real upstream resolvers.
+	existingDNS := readResolvConfDNS()
+	// RHEL backend: also read DNS entries from the existing ifcfg file.
 	if netBackend == "rhel" && fileExists(cfg) {
-		cfgBytes2, _ := os.ReadFile(cfg)
-		for _, line := range strings.Split(string(cfgBytes2), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "DNS") {
-				f := strings.SplitN(line, "=", 2)
-				if len(f) == 2 {
-					existingDNS = append(existingDNS, strings.Trim(f[1], "\""))
+		if cfgBytes2, err := os.ReadFile(cfg); err == nil {
+			for _, line := range strings.Split(string(cfgBytes2), "\n") {
+				line = strings.TrimSpace(line)
+				if m := dnsLineRe.FindStringSubmatch(line); m != nil && usableNameserver(m[1]) {
+					existingDNS = append(existingDNS, strings.Trim(m[1], `"`))
 				}
 			}
 		}
 	}
-	// dedupe
-	dnsSeen := map[string]bool{}
+	existingDNS = dedupeStrings(existingDNS)
 	var dnsBlock string
 	if len(existingDNS) > 0 {
 		dnsBlock = "PEERDNS=no"
-		i := 0
-		for _, d := range existingDNS {
-			if dnsSeen[d] || i >= 2 {
-				continue
+		for i, d := range existingDNS {
+			if i >= 2 {
+				break
 			}
-			dnsSeen[d] = true
-			i++
-			dnsBlock += "\nDNS" + strconv.Itoa(i) + "=" + d
+			dnsBlock += "\nDNS" + strconv.Itoa(i+1) + "=" + d
 		}
 	} else {
 		dnsBlock = "PEERDNS=yes\nDNS1=223.6.6.6\nDNS2=223.5.5.5"
@@ -1045,14 +1632,16 @@ func staticConfig() {
 		if gateway != "" {
 			gwBlock = "GATEWAY=" + gateway + "\n"
 		}
-		content := fmt.Sprintf("TYPE=Ethernet\nBOOTPROTO=static\nNAME=%s\nDEVICE=%s\nONBOOT=yes\nNM_CONTROLLED=yes\nIPADDR=%s\nNETMASK=%s\n%s%s\n",
+		base := fmt.Sprintf("TYPE=Ethernet\nBOOTPROTO=static\nNAME=%s\nDEVICE=%s\nONBOOT=yes\nNM_CONTROLLED=yes\nIPADDR=%s\nNETMASK=%s\n%s%s\n",
 			nic, nic, ipAddr, netmask, gwBlock, dnsBlock)
-		tmp := filepath.Join(ifcfgDir, fmt.Sprintf(".ifcfg-%s.new.%d", nic, os.Getpid()))
-		if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
-			fmt.Println("ERROR: cannot write temp config - nothing was changed.")
+		old := ""
+		if b, err := os.ReadFile(cfg); err == nil {
+			old = string(b)
+		}
+		if err := writeFileAtomic(cfg, mergeIfcfg(old, base, false), 0644); err != nil {
+			fmt.Printf("ERROR: cannot write %s: %v - nothing was changed.\n", cfg, err)
 			return
 		}
-		os.Rename(tmp, cfg)
 	case "debian":
 		d1, d2 := "", ""
 		if len(existingDNS) > 0 {
@@ -1080,7 +1669,12 @@ func staticConfig() {
 		}
 		fmt.Printf("Wrote static config to %s\n", netplanConfigPath)
 	}
-	applyNic(nic, bak)
+	if !applyNic(nic, bak) {
+		if rollbackConfig(bak, nic) {
+			fmt.Printf("Restored the previous configuration from %s.\n", bak)
+		}
+		return
+	}
 	// quick ping
 	pingTarget := gateway
 	if pingTarget == "" {
@@ -1097,6 +1691,31 @@ func staticConfig() {
 func prefixToMask(p int) string {
 	m := net.CIDRMask(p, 32)
 	return net.IP(m).To4().String()
+}
+
+// suggestGateway returns the first usable host address in the subnet that is
+// not the machine's own address. For common 192.168.1.1/24 setups this picks
+// .2 instead of suggesting the host's own address as its gateway.
+func suggestGateway(ip net.IP, mask net.IPMask) string {
+	ip4 := ip.To4()
+	mask4 := []byte(mask)
+	if ip4 == nil || len(mask4) != 4 {
+		return ""
+	}
+	ones := maskSize(net.IP(mask4))
+	if ones < 1 || ones > 30 {
+		return ""
+	}
+	ipn := binary.BigEndian.Uint32(ip4)
+	m := binary.BigEndian.Uint32(mask4)
+	network := ipn & m
+	broadcast := network | ^m
+	for cand := network + 1; cand < broadcast; cand++ {
+		if cand != ipn {
+			return net.IPv4(byte(cand>>24), byte(cand>>16), byte(cand>>8), byte(cand)).String()
+		}
+	}
+	return ""
 }
 
 func netmaskIsValid(m string) bool {
@@ -1171,20 +1790,26 @@ func dhcpConfig() {
 		return
 	}
 	nic := nics[n-1]
+	if reason := specialNICReason(nic); reason != "" {
+		fmt.Printf("ERROR: %s is a %s - refusing to touch it.\n", nic, reason)
+		fmt.Println("       Nothing was changed.")
+		pause()
+		return
+	}
 	cfg := filepath.Join(ifcfgDir, "ifcfg-"+nic)
 	bak := ""
 	switch netBackend {
 	case "rhel":
-		if fileExists(cfg) {
+		old := ""
+		if b, err := os.ReadFile(cfg); err == nil {
+			old = string(b)
 			os.MkdirAll(bakDir, 0700)
 			bak = filepath.Join(bakDir, fmt.Sprintf("ifcfg-%s.%s", nic, time.Now().Format("20060102_150405")))
-			if b, err := os.ReadFile(cfg); err == nil {
-				os.WriteFile(bak, b, 0600)
-			}
+			os.WriteFile(bak, b, 0600)
 		}
-		content := fmt.Sprintf("TYPE=Ethernet\nBOOTPROTO=dhcp\nDEFROUTE=yes\nIPV4_FAILURE_FATAL=no\nNM_CONTROLLED=yes\nNAME=%s\nDEVICE=%s\nONBOOT=yes\n", nic, nic)
-		if err := os.WriteFile(cfg, []byte(content), 0644); err != nil {
-			fmt.Printf("ERROR: cannot write %s - nothing was changed.\n", cfg)
+		base := fmt.Sprintf("TYPE=Ethernet\nBOOTPROTO=dhcp\nDEFROUTE=yes\nIPV4_FAILURE_FATAL=no\nNM_CONTROLLED=yes\nNAME=%s\nDEVICE=%s\nONBOOT=yes\n", nic, nic)
+		if err := writeFileAtomic(cfg, mergeIfcfg(old, base, true), 0644); err != nil {
+			fmt.Printf("ERROR: cannot write %s: %v - nothing was changed.\n", cfg, err)
 			pause()
 			return
 		}
@@ -1205,7 +1830,11 @@ func dhcpConfig() {
 		}
 		fmt.Printf("Wrote DHCP config to %s\n", netplanConfigPath)
 	}
-	applyNic(nic, bak)
+	if !applyNic(nic, bak) {
+		if rollbackConfig(bak, nic) {
+			fmt.Printf("Restored the previous configuration from %s.\n", bak)
+		}
+	}
 	pause()
 }
 
@@ -1536,17 +2165,6 @@ func diskPercMap() (map[int][]percDiskInfo, error) {
 	return res, nil
 }
 
-// centerStr centers s within width w.
-func centerStr(s string, w int) string {
-	if len(s) >= w {
-		return s[:w]
-	}
-	pad := w - len(s)
-	left := pad / 2
-	right := pad - left
-	return strings.Repeat(" ", left) + s + strings.Repeat(" ", right)
-}
-
 // sysfsTarget returns the SCSI target id for a block device (== VD/DG number).
 func sysfsTarget(dev string) int {
 	link, err := os.Readlink("/sys/class/block/" + dev)
@@ -1562,17 +2180,6 @@ func sysfsTarget(dev string) int {
 		}
 	}
 	return -1
-}
-
-// getTTYSize returns (rows, cols) of the tty.
-func getTTYSize() (int, int, error) {
-	fd := int(os.Stdout.Fd())
-	var ws [4]uint16
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(0x5413), uintptr(unsafe.Pointer(&ws[0])))
-	if errno != 0 {
-		return 0, 0, errno
-	}
-	return int(ws[0]), int(ws[1]), nil
 }
 
 func showDisks() {
@@ -1701,7 +2308,6 @@ func showDisks() {
 // ---------- menu header ----------
 
 func cpuInfo() (sockets, model string) {
-	sockets = readFileTrim("/sys/devices/system/cpu/possible")
 	out, _ := run("lscpu")
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(line, "Socket(s):") {
@@ -1913,24 +2519,22 @@ func main() {
 	} else {
 		os.Setenv("TERM", "vt100")
 	}
-	// detect if stdin is a tty
+	// Detect whether stdin is a real terminal. A character device such as
+	// /dev/null also has ModeCharDevice set, so verify with TCGETS.
 	if fi, err := os.Stdin.Stat(); err == nil && (fi.Mode()&os.ModeCharDevice) != 0 {
-		stdinIsTty = true
+		if _, terr := tcGet(int(os.Stdin.Fd())); terr == nil {
+			stdinIsTty = true
+		}
 	}
 	detectTTY()
 	// cbreak mode (char-by-char, no echo, VMIN=0/VTIME=2)
 	enterCbreak()
-	// disable sysrq, restore on exit (also before syscall.Exec)
-	origSysrq := []byte(nil)
-	if orig, err := os.ReadFile("/proc/sys/kernel/sysrq"); err == nil {
-		origSysrq = orig
-		os.WriteFile("/proc/sys/kernel/sysrq", []byte("0"), 0644)
-		defer os.WriteFile("/proc/sys/kernel/sysrq", origSysrq, 0644)
-	}
+	// disable sysrq while the menu owns the console; cleanup restores it on
+	// every normal exit path, including signals and agetty re-exec failures.
+	disableSysrq()
 	initSignals()
 	migrateIfcfgBackups()
-	// restore terminal on exit
-	defer exitCbreak()
+	defer cleanup()
 
 	for {
 		drawMenu()
@@ -1988,33 +2592,74 @@ func main() {
 				pause()
 				continue
 			}
-			exitCbreak()
-			if origSysrq != nil {
-				os.WriteFile("/proc/sys/kernel/sysrq", origSysrq, 0644)
+			if myTTY == "" {
+				fmt.Println("ERROR: cannot determine the current tty.")
+				pause()
+				continue
 			}
+			cleanup()
 			argv := []string{"agetty", "--noclear", myTTY, "linux"}
 			if err := syscall.Exec(exe, argv, os.Environ()); err != nil {
 				// Exec only returns on failure.
 				fmt.Printf("ERROR: exec agetty: %v\n", err)
 				enterCbreak()
+				disableSysrq()
 				pause()
 				continue
 			}
 			// Unreachable on success.
 		case "8":
-			// Pull and run the official tty.sh installer; it restarts this
-			// service at the end, so on success we never return.
+			// Pull and run the official tty.sh installer. The installer is
+			// asked to skip its own restart (LINUX_TTY_NO_RESTART) so this
+			// menu can restart exactly the tty it is running on.
+			if myTTY == "" || !validTTYName(myTTY) {
+				fmt.Println("ERROR: cannot determine a safe tty name for update.")
+				pause()
+				continue
+			}
+			var updateCmd string
+			if _, err := exec.LookPath("curl"); err == nil {
+				updateCmd = "curl -fsSL https://bash.niteng.net/iso/tty.sh | bash"
+			} else if _, err := exec.LookPath("wget"); err == nil {
+				updateCmd = "wget -qO- https://bash.niteng.net/iso/tty.sh | bash"
+			} else {
+				fmt.Println("ERROR: online update needs curl or wget.")
+				pause()
+				continue
+			}
 			fmt.Println("Updating linux-tty ...")
-			exitCbreak()
-			c := exec.Command("bash", "-c", "curl -fsSL https://bash.niteng.net/iso/tty.sh | bash")
+			cleanup()
+			c := exec.Command("bash", "-o", "pipefail", "-c", updateCmd)
+			env := make([]string, 0, len(os.Environ())+2)
+			for _, e := range os.Environ() {
+				if strings.HasPrefix(e, "LINUX_TTY_TARGET=") || strings.HasPrefix(e, "LINUX_TTY_NO_RESTART=") {
+					continue
+				}
+				env = append(env, e)
+			}
+			env = append(env, "LINUX_TTY_TARGET="+myTTY, "LINUX_TTY_NO_RESTART=1")
+			c.Env = env
 			c.Stdin = os.Stdin
 			c.Stdout = os.Stdout
 			c.Stderr = os.Stderr
-			c.Run()
-			// Only reached on network / download failure.
+			err := c.Run()
 			fmt.Println()
 			enterCbreak()
-			pause()
+			disableSysrq()
+			if err != nil {
+				fmt.Printf("ERROR: update failed: %v\n", err)
+				pause()
+				continue
+			}
+			unit := "linux-tty@" + myTTY + ".service"
+			fmt.Printf("Update installed; restarting %s ...\n", unit)
+			if err := exec.Command("systemctl", "restart", unit).Run(); err != nil {
+				fmt.Printf("ERROR: restart %s failed: %v\n", unit, err)
+				pause()
+				continue
+			}
+			// systemd normally replaces this process; wait as a fallback.
+			time.Sleep(5 * time.Second)
 		case "666":
 			// hidden entry: passwordless root shell (VT consoles only)
 			if !isVTConsole(myTTY) {
@@ -2033,10 +2678,12 @@ func main() {
 				pause()
 				continue
 			}
-			exitCbreak()
-			if origSysrq != nil {
-				os.WriteFile("/proc/sys/kernel/sysrq", origSysrq, 0644)
+			if myTTY == "" {
+				fmt.Println("ERROR: cannot determine the current tty.")
+				pause()
+				continue
 			}
+			cleanup()
 			// Directly exec agetty — replaces this process image,
 			// no systemd Conflicts race. agetty runs root shell;
 			// on exit, linux-root-shell exec's back to linux-tty.
@@ -2048,6 +2695,7 @@ func main() {
 			if err := syscall.Exec(exe, argv, os.Environ()); err != nil {
 				fmt.Printf("ERROR: exec agetty: %v\n", err)
 				enterCbreak()
+				disableSysrq()
 				pause()
 				continue
 			}
