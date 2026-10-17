@@ -224,6 +224,22 @@ func TestValidTTYName(t *testing.T) {
 	}
 }
 
+func TestBuiltinSlotOverrideFor(t *testing.T) {
+	cases := []struct {
+		product, bdf, want string
+	}{
+		{"PowerEdge R730xd", "0000:05:00.0", "Slot 6-1"},
+		{"PowerEdge R730xd", "06:00.0", "Slot 6-2"},
+		{"PowerEdge R730xd", "0000:07:00.0", ""},
+		{"ProLiant DL360 Gen9", "0000:05:00.0", ""},
+	}
+	for _, c := range cases {
+		if got := builtinSlotOverrideFor(c.product, c.bdf); got != c.want {
+			t.Errorf("builtinSlotOverrideFor(%q, %q) = %q, want %q", c.product, c.bdf, got, c.want)
+		}
+	}
+}
+
 func TestParseSlotOverrides(t *testing.T) {
 	m := parseSlotOverrides(`# PCIe bifurcation mapping
 05:00.0        Slot 6-1

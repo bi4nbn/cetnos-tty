@@ -28,7 +28,7 @@
 
 ### 手动槽位映射
 
-部分服务器的 SMBIOS 不提供 NVMe 物理槽位（DMI 中为 `0000:ff:1f.7` 占位符）。可创建可选文件 `/etc/linux-tty.slots` 覆盖 SLOT 列，键可以是 PCI BDF、设备名或磁盘序列号，值取该行剩余文本：
+部分服务器的 SMBIOS 不提供 NVMe 物理槽位（DMI 中为 `0000:ff:1f.7` 占位符）。二进制已内置 Dell R730xd 的 Slot 6 拆分规则：`05:00.0` / `06:00.0` 分别显示 `Slot 6-1` / `Slot 6-2`，不再需要额外配置文件。其他机型仍可创建可选文件 `/etc/linux-tty.slots` 覆盖 SLOT 列，键可以是 PCI BDF、设备名或磁盘序列号，值取该行剩余文本：
 
 ```text
 05:00.0          Slot 6-1

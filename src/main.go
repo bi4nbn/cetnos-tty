@@ -2586,7 +2586,46 @@ func slotOverride(dev, serial, bdf string) string {
 			}
 		}
 	}
+	if v := builtinSlotOverride(bdf); v != "" {
+		return v
+	}
 	return ""
+}
+
+var productNameOnce sync.Once
+var productName string
+
+func systemProductName() string {
+	productNameOnce.Do(func() {
+		out, err := run("dmidecode", "-s", "system-product-name")
+		if err == nil {
+			productName = strings.TrimSpace(out)
+		}
+	})
+	return productName
+}
+
+// builtinSlotOverride encodes known bifurcated-slot layouts that SMBIOS does
+// not describe (Slot 6 bus address is 0000:ff:1f.7 on these Dell models).
+func builtinSlotOverrideFor(product, bdf string) string {
+	if !strings.EqualFold(strings.TrimSpace(product), "PowerEdge R730xd") {
+		return ""
+	}
+	bdf = strings.ToLower(strings.TrimSpace(bdf))
+	if strings.HasPrefix(bdf, "0000:") {
+		bdf = bdf[5:]
+	}
+	switch bdf {
+	case "05:00.0":
+		return "Slot 6-1"
+	case "06:00.0":
+		return "Slot 6-2"
+	}
+	return ""
+}
+
+func builtinSlotOverride(bdf string) string {
+	return builtinSlotOverrideFor(systemProductName(), bdf)
 }
 
 // sysfsTarget returns the SCSI target id for a block device (== VD/DG number).
