@@ -2799,11 +2799,9 @@ func showDisks() {
 					truncateStr(r.dt, 9),
 					slotW, truncateStr(r.slot, slotW),
 					truncateStr(serial, serialW))
-				for ci, ch := range r.children {
+				for _, ch := range r.children {
+					// Keep the vertical line continuous on every child row.
 					prefix := "|-"
-					if ci == len(r.children)-1 {
-						prefix = "`-"
-					}
 					childSlot := ch.slot
 					if childSlot == "" {
 						childSlot = "-"
