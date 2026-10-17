@@ -258,6 +258,7 @@ Smart Array P440ar in Slot 0 (Embedded)   (sn: TEST)
          Port: 1I
          Box: 0
          Bay: 2
+         Size: 800 GB
          Interface Type: Solid State SATA
          Serial Number: SN2
          Model: ATA     INTEL SSDSC2BB80
@@ -289,6 +290,9 @@ Smart Array P440ar in Slot 0 (Embedded)   (sn: TEST)
 	}
 	if pds[0].Raid != "RAID5" {
 		t.Errorf("raid = %q, want RAID5", pds[0].Raid)
+	}
+	if pds[0].Size != "800G" {
+		t.Errorf("size = %q, want 800G", pds[0].Size)
 	}
 	if pds[0].Intf != "SATA" || pds[0].Med != "SSD" {
 		t.Errorf("type = %s/%s, want SATA/SSD", pds[0].Intf, pds[0].Med)

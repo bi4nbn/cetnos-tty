@@ -2072,6 +2072,7 @@ type percDiskInfo struct {
 	DID    int
 	DG     int
 	Raid   string // RAID0 / RAID5 / ...
+	Size   string
 	Serial string
 	Model  string
 	Intf   string // SATA / SAS
@@ -2160,10 +2161,10 @@ func parsePercRaidLevels(out string) map[int]string {
 func parsePercDiskOutput(out string) map[int][]percDiskInfo {
 	res := map[int][]percDiskInfo{}
 	var curEID, curDG, curSlot, curDID int = -1, -1, -1, -1
-	var curSerial, curModel, curIntf, curMed string
+	var curSerial, curModel, curIntf, curMed, curSize string
 	flush := func() {
 		if curSlot >= 0 && curDID >= 0 {
-			info := percDiskInfo{EID: curEID, Slot: curSlot, DID: curDID, DG: curDG, Serial: curSerial, Model: curModel, Intf: curIntf, Med: curMed}
+			info := percDiskInfo{EID: curEID, Slot: curSlot, DID: curDID, DG: curDG, Size: curSize, Serial: curSerial, Model: curModel, Intf: curIntf, Med: curMed}
 			if curDG >= 0 {
 				res[curDG] = append(res[curDG], info)
 			}
@@ -2171,7 +2172,7 @@ func parsePercDiskOutput(out string) map[int][]percDiskInfo {
 		}
 	}
 	// Table row: "32:0      0 Onln   1 5.457 TB SATA HDD N   N  512B ST6000NM0115-1YZ110"
-	tblRe := regexp.MustCompile(`^(\d+):(\d+)\s+(\d+)\s+\w+\s+(-?\d+)\s+[\d.]+\s+\w+\s+(\w+)\s+(\w+)`)
+	tblRe := regexp.MustCompile(`^(\d+):(\d+)\s+(\d+)\s+\w+\s+(-?\d+)\s+([\d.]+)\s+(\w+)\s+(\w+)\s+(\w+)`)
 	snRe := regexp.MustCompile(`^SN\s*=\s*(\S+)`)
 	modelRe := regexp.MustCompile(`^Model Number\s*=\s*(.+)`)
 	driveRe := regexp.MustCompile(`^Drive /c\d+/e\d+/s\d+\s*:$`)
@@ -2180,7 +2181,7 @@ func parsePercDiskOutput(out string) map[int][]percDiskInfo {
 		if driveRe.MatchString(trim) {
 			flush()
 			curEID, curDG, curSlot, curDID = -1, -1, -1, -1
-			curSerial, curModel, curIntf, curMed = "", "", "", ""
+			curSerial, curModel, curIntf, curMed, curSize = "", "", "", "", ""
 			continue
 		}
 		if m := tblRe.FindStringSubmatch(trim); m != nil {
@@ -2188,8 +2189,9 @@ func parsePercDiskOutput(out string) map[int][]percDiskInfo {
 			curSlot, _ = strconv.Atoi(m[2])
 			curDID, _ = strconv.Atoi(m[3])
 			curDG, _ = strconv.Atoi(m[4])
-			curIntf = strings.ToUpper(m[5])
-			curMed = strings.ToUpper(m[6])
+			curSize = compactSize(m[5], m[6])
+			curIntf = strings.ToUpper(m[7])
+			curMed = strings.ToUpper(m[8])
 			continue
 		}
 		if m := snRe.FindStringSubmatch(trim); m != nil {
@@ -2216,6 +2218,7 @@ type hpDiskInfo struct {
 	Box    int
 	Bay    int
 	Raid   string // RAID0 / RAID5 / ...
+	Size   string
 	Serial string
 	Model  string
 	Intf   string // SATA / SAS / NVMe
@@ -2368,6 +2371,11 @@ func parseHPDiskConfig(out string) map[string][]hpDiskInfo {
 			} else if strings.Contains(v, "rpm") && pd.Med == "" {
 				pd.Med = "HDD"
 			}
+		case strings.HasPrefix(trim, "Size:"):
+			f := strings.Fields(strings.TrimSpace(strings.TrimPrefix(trim, "Size:")))
+			if len(f) >= 2 {
+				pd.Size = compactSize(f[0], f[1])
+			}
 		case strings.HasPrefix(trim, "Serial Number:"):
 			pd.Serial = strings.TrimSpace(strings.TrimPrefix(trim, "Serial Number:"))
 		case strings.HasPrefix(trim, "Model:"):
@@ -2474,6 +2482,28 @@ func sysfsTarget(dev string) int {
 	return -1
 }
 
+func compactSize(num, unit string) string {
+	f, err := strconv.ParseFloat(num, 64)
+	if err != nil {
+		return strings.TrimSpace(num + unit)
+	}
+	switch strings.ToUpper(unit) {
+	case "TB":
+		if f >= 100 {
+			return fmt.Sprintf("%.0fT", f)
+		}
+		return fmt.Sprintf("%.1fT", f)
+	case "GB":
+		if f >= 100 {
+			return fmt.Sprintf("%.0fG", f)
+		}
+		return fmt.Sprintf("%.1fG", f)
+	case "MB":
+		return fmt.Sprintf("%.0fM", f)
+	}
+	return fmt.Sprintf("%.1f%s", f, strings.ToLower(unit))
+}
+
 func truncateStr(s string, n int) string {
 	if n <= 0 {
 		return ""
@@ -2564,6 +2594,8 @@ func showDisks() {
 
 	type diskChild struct {
 		slot   string
+		size   string
+		dt     string
 		serial string
 	}
 	type diskRow struct {
@@ -2618,8 +2650,14 @@ func showDisks() {
 						}
 						serial = "-"
 						for _, d := range disks {
+							cdt := ""
+							if d.Intf != "" && d.Med != "" {
+								cdt = d.Intf + "-" + d.Med
+							}
 							children = append(children, diskChild{
 								slot:   percSlotLabel(d),
+								size:   d.Size,
+								dt:     cdt,
 								serial: d.Serial,
 							})
 						}
@@ -2658,8 +2696,14 @@ func showDisks() {
 						if i < len(labels) {
 							label = labels[i]
 						}
+						cdt := ""
+						if d.Intf != "" && d.Med != "" {
+							cdt = d.Intf + "-" + d.Med
+						}
 						children = append(children, diskChild{
 							slot:   label,
+							size:   d.Size,
+							dt:     cdt,
 							serial: d.Serial,
 						})
 					}
@@ -2764,12 +2808,24 @@ func showDisks() {
 					if childSlot == "" {
 						childSlot = "-"
 					}
+					childSize := ch.size
+					if childSize == "" {
+						childSize = "-"
+					}
+					childType := ch.dt
+					if childType == "" {
+						childType = r.dt
+					}
 					childSerial := ch.serial
 					if childSerial == "" {
 						childSerial = "-"
 					}
-					fmt.Printf("  %s %-6s %s\n", prefix,
-						truncateStr(childSlot, 6), truncateStr(childSerial, 60))
+					fmt.Printf("  %-*s %-6s %-9s %-*s %s\n",
+						deviceW, prefix,
+						childSize,
+						truncateStr(childType, 9),
+						slotW, truncateStr(childSlot, slotW),
+						truncateStr(childSerial, serialW))
 				}
 			}
 			if page+1 < totalPages {
