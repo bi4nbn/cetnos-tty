@@ -2800,8 +2800,9 @@ func showDisks() {
 					slotW, truncateStr(r.slot, slotW),
 					truncateStr(serial, serialW))
 				for _, ch := range r.children {
-					// Keep the vertical line continuous on every child row.
-					prefix := "|-"
+					// Indent child rows one level and keep the branch line
+					// continuous; the remaining columns stay aligned.
+					prefix := "  |--"
 					childSlot := ch.slot
 					if childSlot == "" {
 						childSlot = "-"
