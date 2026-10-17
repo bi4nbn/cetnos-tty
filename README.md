@@ -26,6 +26,19 @@
 
 菜单 3 同时支持 LSI MegaRAID / Dell PERC（`perccli`/`storcli`）和 **HP Smart Array**（`ssacli`/`hpssacli`/`hpacucli`）。SLOT 列会带上 RAID 模式：单盘逻辑卷显示 `RAID0:12`，多盘阵列父行显示 `RAID5`、子行显示槽位号。Dell PERC 的槽位来自 `EID:Slot`，显示时只取 Slot；HP 逻辑卷通过 `ssacli ctrl all show config detail` 映射回物理盘位。磁盘页按终端高度自动分页填满屏幕：BIOS 25 行时每页 18 行数据，UEFI 48 行时每页 41 行；按 Enter 翻页、输入 `q` 退出。列宽固定 80 列五列表格（DEVICE/SIZE/TYPE/SLOT/SERIAL），超长字段用 `...` 截断。逻辑卷对应多块物理盘时，父行显示 RAID 模式，下面用树形列出每个物理盘位和序列号。NVMe 盘优先通过 SMBIOS 显示 PCIe 插槽名（如 `Slot 2`），没有映射时回退到 PCI 地址。
 
+### 手动槽位映射
+
+部分服务器的 SMBIOS 不提供 NVMe 物理槽位（DMI 中为 `0000:ff:1f.7` 占位符）。可创建可选文件 `/etc/linux-tty.slots` 覆盖 SLOT 列，键可以是 PCI BDF、设备名或磁盘序列号，值取该行剩余文本：
+
+```text
+05:00.0          Slot 6-1
+06:00.0          Slot 6-2
+nvme0n1          Slot 6-1
+S438NA0N910155   Slot 6-1
+```
+
+菜单会优先使用该映射；没有配置的盘继续走 SMBIOS/PCI 地址自动映射。修改后重启 `linux-tty@tty1` 生效。
+
 ## 快速安装
 
 ```bash

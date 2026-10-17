@@ -2507,25 +2507,86 @@ func shortSlotName(s string) string {
 
 var nvmeCtrlRe = regexp.MustCompile(`^(nvme\d+)`)
 
-// nvmeSlot returns the physical PCIe slot for an NVMe namespace, or its PCI
-// BDF / controller name when SMBIOS has no slot mapping.
-func nvmeSlot(dev string) string {
+// nvmeSlot returns the physical PCIe slot for an NVMe namespace, its PCI
+// BDF when SMBIOS has no slot mapping, and the BDF for override matching.
+func nvmeSlot(dev string) (slot, bdf string) {
 	m := nvmeCtrlRe.FindStringSubmatch(dev)
 	if m == nil {
-		return ""
+		return "", ""
 	}
 	ctrl := m[1]
-	bdf := readFileTrim("/sys/class/nvme/" + ctrl + "/address")
+	bdf = readFileTrim("/sys/class/nvme/" + ctrl + "/address")
 	if bdf == "" {
-		return ctrl
+		return ctrl, ""
 	}
 	if name := pciSlotName(bdf); name != "" {
-		return name
+		return name, bdf
 	}
 	if parts := strings.SplitN(bdf, ":", 2); len(parts) == 2 && len(parts[0]) == 4 {
-		return parts[1]
+		return parts[1], bdf
 	}
-	return bdf
+	return bdf, bdf
+}
+
+var slotOverrides map[string]string
+var slotOverridesOnce sync.Once
+
+func parseSlotOverrides(data string) map[string]string {
+	m := map[string]string{}
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		key := strings.ToLower(fields[0])
+		slot := strings.TrimSpace(strings.TrimPrefix(line, fields[0]))
+		if slot == "" {
+			continue
+		}
+		m[key] = slot
+		if strings.HasPrefix(key, "0000:") {
+			m[key[5:]] = slot
+		}
+	}
+	return m
+}
+
+// loadSlotOverrides reads an optional admin mapping. Keys may be a PCI BDF,
+// kernel device name or disk serial; the value is the slot text to display.
+func loadSlotOverrides() {
+	slotOverrides = map[string]string{}
+	path := os.Getenv("LINUX_TTY_SLOTS")
+	if path == "" {
+		path = "/etc/linux-tty.slots"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	slotOverrides = parseSlotOverrides(string(data))
+}
+
+func slotOverride(dev, serial, bdf string) string {
+	slotOverridesOnce.Do(loadSlotOverrides)
+	for _, k := range []string{dev, serial, bdf} {
+		k = strings.ToLower(strings.TrimSpace(k))
+		if k == "" {
+			continue
+		}
+		if v, ok := slotOverrides[k]; ok {
+			return v
+		}
+		if strings.HasPrefix(k, "0000:") {
+			if v, ok := slotOverrides[k[5:]]; ok {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 // sysfsTarget returns the SCSI target id for a block device (== VD/DG number).
@@ -2773,10 +2834,16 @@ func showDisks() {
 				}
 			}
 		}
-		if slot == "-" && strings.HasPrefix(dev, "nvme") {
-			if s := nvmeSlot(dev); s != "" {
-				slot = s
+		bdf := ""
+		if strings.HasPrefix(dev, "nvme") {
+			auto, addr := nvmeSlot(dev)
+			if slot == "-" && auto != "" {
+				slot = auto
 			}
+			bdf = addr
+		}
+		if o := slotOverride(dev, serial, bdf); o != "" {
+			slot = o
 		}
 		if slot == "-" {
 			if t := sysfsTarget(dev); t >= 0 {

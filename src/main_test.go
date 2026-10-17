@@ -224,6 +224,26 @@ func TestValidTTYName(t *testing.T) {
 	}
 }
 
+func TestParseSlotOverrides(t *testing.T) {
+	m := parseSlotOverrides(`# PCIe bifurcation mapping
+05:00.0        Slot 6-1
+0000:06:00.0   Slot 6-2
+nvme0n1        Slot 6-1
+S438NA0N910155 Slot 6-1
+`)
+	for key, want := range map[string]string{
+		"05:00.0":        "Slot 6-1",
+		"0000:06:00.0":   "Slot 6-2",
+		"06:00.0":        "Slot 6-2",
+		"nvme0n1":        "Slot 6-1",
+		"s438na0n910155": "Slot 6-1",
+	} {
+		if got := m[key]; got != want {
+			t.Errorf("slot override %q = %q, want %q", key, got, want)
+		}
+	}
+}
+
 func TestParsePercRaidLevels(t *testing.T) {
 	out := `
 ---------------------------------------------------------------
