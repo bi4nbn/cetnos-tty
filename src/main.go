@@ -2398,7 +2398,21 @@ func sysfsTarget(dev string) int {
 	return -1
 }
 
+func truncateStr(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if len(s) <= n {
+		return s
+	}
+	if n <= 3 {
+		return s[:n]
+	}
+	return s[:n-3] + "..."
+}
+
 func showDisks() {
+	fmt.Print("\033[2J\033[H")
 	syslist := systemDisks()
 	sysSet := map[string]bool{}
 	for _, d := range syslist {
@@ -2408,10 +2422,6 @@ func showDisks() {
 		fmt.Println("WARNING: unable to identify system disk (/) - list below may")
 		fmt.Println("         include the disk hosting the OS.")
 	}
-	fmt.Println("========================== DISKS ===========================")
-	fmt.Println()
-	fmt.Printf("  %-12s %-6s %-8s %-20s %-20s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
-	fmt.Println("  ------------------------------------------------------------")
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
 	// nvme0c0n1). Only apply dedup to NVMe devices; RAID virtual disks
@@ -2445,15 +2455,24 @@ func showDisks() {
 		chosen[key] = dev
 		deduped = append(deduped, dev)
 	}
-	shown := 0
+
+	type diskRow struct {
+		display string
+		size    string
+		dt      string
+		model   string
+		slot    string
+		serial  string
+	}
+	var rows []diskRow
 	for _, dev := range deduped {
-		display := dev
-		if sysSet[dev] {
-			display = dev + " [SYS]"
-		}
 		size := diskSizeHuman(dev)
 		if size == "" || size == "-" {
 			continue
+		}
+		display := dev
+		if sysSet[dev] {
+			display = dev + " [SYS]"
 		}
 		dt := diskType(dev)
 		_, model, serial := diskInfo(dev)
@@ -2521,28 +2540,61 @@ func showDisks() {
 				slot = fmt.Sprintf("%02d", t)
 			}
 		}
-		if len(model) > 20 {
-			model = model[:20]
-		}
-		if len(serial) > 60 {
-			serial = serial[:60]
-		}
-		shown++
-		fmt.Printf("  %-12s %-6s %-8s %-20s %-20s %s\n", display, size, dt, model, slot, serial)
-		if shown%20 == 0 && shown < len(deduped) {
-			a, intr := ask("  -- more -- Press Enter for next page (q+Enter to stop): ")
-			if intr {
-				return
-			}
-			if strings.TrimSpace(a) == "q" {
-				break
-			}
-		}
+		rows = append(rows, diskRow{
+			display: truncateStr(display, 16),
+			size:    size,
+			dt:      truncateStr(dt, 9),
+			model:   truncateStr(model, 20),
+			slot:    truncateStr(slot, 16),
+			serial:  truncateStr(serial, 68),
+		})
 	}
-	if shown == 0 {
+
+	const pageSize = 5
+	totalPages := (len(rows) + pageSize - 1) / pageSize
+	if totalPages == 0 {
+		totalPages = 1
+	}
+	printHeader := func(page, total int) {
+		fmt.Printf("========================== DISKS (%d/%d) ==========================\n", page, total)
+		fmt.Println()
+		fmt.Printf("  %-16s %-6s %-9s %-16s %s\n", "DEVICE", "SIZE", "TYPE", "SLOT", "MODEL")
+		fmt.Println("  " + strings.Repeat("-", 70))
+	}
+
+	if len(rows) == 0 {
+		printHeader(1, 1)
 		fmt.Println("  (no disk found)")
+	} else {
+		for page := 0; page < totalPages; page++ {
+			if page > 0 {
+				fmt.Print("\033[2J\033[H")
+			}
+			printHeader(page+1, totalPages)
+			start := page * pageSize
+			end := start + pageSize
+			if end > len(rows) {
+				end = len(rows)
+			}
+			for i := start; i < end; i++ {
+				r := rows[i]
+				fmt.Printf("  %-16s %-6s %-9s %-16s %s\n", r.display, r.size, r.dt, r.slot, r.model)
+				if r.serial != "" {
+					fmt.Printf("    SN   %s\n", r.serial)
+				}
+			}
+			if page+1 < totalPages {
+				a, intr := ask(fmt.Sprintf("\n  -- Page %d/%d -- Enter=next, q=quit: ", page+1, totalPages))
+				if intr {
+					return
+				}
+				if strings.TrimSpace(a) == "q" {
+					break
+				}
+			}
+		}
 	}
-	fmt.Println("==========================================================================")
+	fmt.Println(strings.Repeat("=", 72))
 	pause()
 }
 
