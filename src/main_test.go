@@ -398,6 +398,24 @@ Media and Data Integrity Errors:    0`
 	}
 }
 
+func TestNVMeLife(t *testing.T) {
+	cases := []struct {
+		attrs string
+		want  string
+	}{
+		{"Percentage Used: 2%", "98%"},
+		{"Percentage Used: 100%", "0%"},
+		{"Percentage Used: 105%", "0%"},
+		{"Critical Warning: 0x01", "WARN"},
+		{"", "-"},
+	}
+	for _, c := range cases {
+		if got := nvmeLifeFromAttrs(c.attrs); got != c.want {
+			t.Errorf("nvmeLifeFromAttrs(%q) = %q, want %q", c.attrs, got, c.want)
+		}
+	}
+}
+
 func TestHealthHelpers(t *testing.T) {
 	cases := []struct {
 		pd   percDiskInfo

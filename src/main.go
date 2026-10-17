@@ -2352,11 +2352,21 @@ func smartInt(s string) int {
 	return n
 }
 
-// smartAttrWarn flags NVMe SMART conditions that are not reflected in the
-// overall PASSED/FAILED line: critical warning, spare below threshold, high
-// wear, or media integrity errors.
-func smartAttrWarn(out string) bool {
-	spare, threshold, used := -1, -1, -1
+func smartPercentageUsed(out string) int {
+	for _, line := range strings.Split(out, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "Percentage Used:") {
+			return smartPercent(strings.TrimPrefix(t, "Percentage Used:"))
+		}
+	}
+	return -1
+}
+
+// smartCritical flags NVMe conditions that are not reflected in the overall
+// PASSED/FAILED line: critical warning, spare below threshold, or media
+// integrity errors. High wear is handled separately as a lifetime percentage.
+func smartCritical(out string) bool {
+	spare, threshold := -1, -1
 	for _, line := range strings.Split(out, "\n") {
 		t := strings.TrimSpace(line)
 		switch {
@@ -2369,21 +2379,50 @@ func smartAttrWarn(out string) bool {
 			threshold = smartPercent(strings.TrimPrefix(t, "Available Spare Threshold:"))
 		case strings.HasPrefix(t, "Available Spare:"):
 			spare = smartPercent(strings.TrimPrefix(t, "Available Spare:"))
-		case strings.HasPrefix(t, "Percentage Used:"):
-			used = smartPercent(strings.TrimPrefix(t, "Percentage Used:"))
 		case strings.HasPrefix(t, "Media and Data Integrity Errors:"):
 			if n := smartInt(strings.TrimPrefix(t, "Media and Data Integrity Errors:")); n > 0 {
 				return true
 			}
 		}
 	}
-	if spare >= 0 && threshold >= 0 && spare < threshold {
-		return true
+	return spare >= 0 && threshold >= 0 && spare < threshold
+}
+
+func smartAttrWarn(out string) bool {
+	return smartCritical(out) || smartPercentageUsed(out) >= 90
+}
+
+// nvmeLifeFromAttrs returns remaining endurance as e.g. "98%" (100 - wear).
+func nvmeLifeFromAttrs(out string) string {
+	if used := smartPercentageUsed(out); used >= 0 {
+		life := 100 - used
+		if life < 0 {
+			life = 0
+		}
+		if life > 100 {
+			life = 100
+		}
+		return fmt.Sprintf("%d%%", life)
 	}
-	if used >= 90 {
-		return true
+	if smartCritical(out) {
+		return "WARN"
 	}
-	return false
+	return "-"
+}
+
+func nvmeLife(dev string) string {
+	if smartctlPath() == "" {
+		return "-"
+	}
+	m := nvmeCtrlRe.FindStringSubmatch(dev)
+	if m == nil {
+		return "-"
+	}
+	target := "/dev/" + m[1]
+	if parseSmartHealth(runSmartctl("-H", target)) == "BAD" {
+		return "BAD"
+	}
+	return nvmeLifeFromAttrs(runSmartctl("-A", target))
 }
 
 func smartHealth(dev string) string {
@@ -2391,22 +2430,8 @@ func smartHealth(dev string) string {
 		return "-"
 	}
 	target := dev
-	nvme := strings.HasPrefix(dev, "nvme")
-	if nvme {
-		m := nvmeCtrlRe.FindStringSubmatch(dev)
-		if m == nil {
-			return "-"
-		}
-		target = "/dev/" + m[1]
-	}
 	out := runSmartctl("-H", target)
-	h := parseSmartHealth(out)
-	if nvme && h == "OK" {
-		if smartAttrWarn(runSmartctl("-A", target)) {
-			return "WARN"
-		}
-	}
-	return h
+	return parseSmartHealth(out)
 }
 
 func worstHealth(hs ...string) string {
@@ -3127,7 +3152,11 @@ func showDisks() {
 			}
 		}
 		if health == "-" {
-			health = smartHealth(dev)
+			if strings.HasPrefix(dev, "nvme") {
+				health = nvmeLife(dev)
+			} else {
+				health = smartHealth(dev)
+			}
 		}
 		rows = append(rows, diskRow{
 			display:  display,
