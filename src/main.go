@@ -2583,30 +2583,28 @@ func showDisks() {
 
 	_, cols := getTTYSize()
 	usable := cols - 2
-	if usable < 40 {
+	if usable < 60 {
 		usable = 78
 	}
-	// Wide terminals get a single-line table with the serial included. Narrow
-	// terminals keep the two-line form so the serial never wraps.
-	compact := usable >= 110
-	deviceW, slotW, modelW, serialW, lineWidth := 16, 16, 20, 0, 73
-	if compact {
-		deviceW, slotW, modelW = 14, 14, 20
-		fixed := 2 + deviceW + 1 + 6 + 1 + 9 + 1 + slotW + 1 + modelW + 1
-		serialW = usable - fixed
-		if serialW < 24 {
-			compact = false
-		} else {
-			if serialW > 60 {
-				serialW = 60
-			}
-			lineWidth = fixed + serialW
-		}
+	// Keep the same six columns on BIOS and UEFI consoles. Only the widths
+	// shrink; long fields are truncated with "...". The serial column is
+	// always present so both layouts look identical in structure.
+	deviceW, slotW, modelW, serialW := 14, 14, 20, 0
+	calcFixed := func() int {
+		return 22 + deviceW + slotW + modelW
 	}
-	if !compact {
-		deviceW, slotW, modelW = 16, 16, 20
-		lineWidth = 73
+	serialW = usable - calcFixed()
+	if serialW < 12 {
+		deviceW, slotW, modelW = 12, 8, 16
+		serialW = usable - calcFixed()
 	}
+	if serialW < 10 {
+		serialW = 10
+	}
+	if serialW > 60 {
+		serialW = 60
+	}
+	lineWidth := calcFixed() + serialW
 
 	printHeader := func(page, total int) {
 		title := fmt.Sprintf("DISKS (%d/%d)", page, total)
@@ -2618,13 +2616,8 @@ func showDisks() {
 		right := pad - left
 		fmt.Printf("%s %s %s\n", strings.Repeat("=", left), title, strings.Repeat("=", right))
 		fmt.Println()
-		if compact {
-			fmt.Printf("  %-*s %-6s %-9s %-*s %-*s %s\n",
-				deviceW, "DEVICE", "SIZE", "TYPE", slotW, "SLOT", modelW, "MODEL", "SERIAL")
-		} else {
-			fmt.Printf("  %-*s %-6s %-9s %-*s %s\n",
-				deviceW, "DEVICE", "SIZE", "TYPE", slotW, "SLOT", "MODEL")
-		}
+		fmt.Printf("  %-*s %-6s %-9s %-*s %-*s %s\n",
+			deviceW, "DEVICE", "SIZE", "TYPE", slotW, "SLOT", modelW, "MODEL", "SERIAL")
 		fmt.Println("  " + strings.Repeat("-", lineWidth-2))
 	}
 
@@ -2644,25 +2637,17 @@ func showDisks() {
 			}
 			for i := start; i < end; i++ {
 				r := rows[i]
-				if compact {
-					fmt.Printf("  %-*s %-6s %-9s %-*s %-*s %s\n",
-						deviceW, truncateStr(r.display, deviceW),
-						r.size,
-						truncateStr(r.dt, 9),
-						slotW, truncateStr(r.slot, slotW),
-						modelW, truncateStr(r.model, modelW),
-						truncateStr(r.serial, serialW))
-					continue
+				serial := r.serial
+				if serial == "" {
+					serial = "-"
 				}
-				fmt.Printf("  %-*s %-6s %-9s %-*s %s\n",
+				fmt.Printf("  %-*s %-6s %-9s %-*s %-*s %s\n",
 					deviceW, truncateStr(r.display, deviceW),
 					r.size,
 					truncateStr(r.dt, 9),
 					slotW, truncateStr(r.slot, slotW),
-					truncateStr(r.model, modelW))
-				if r.serial != "" {
-					fmt.Printf("    SN   %s\n", truncateStr(r.serial, 68))
-				}
+					modelW, truncateStr(r.model, modelW),
+					truncateStr(serial, serialW))
 			}
 			if page+1 < totalPages {
 				a, intr := ask(fmt.Sprintf("\n  -- Page %d/%d -- Enter=next, q=quit: ", page+1, totalPages))
