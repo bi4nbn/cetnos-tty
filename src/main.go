@@ -97,6 +97,10 @@ func enterCbreak() {
 	t := *origTermios
 	t.Lflag &^= syscall.ICANON
 	t.Lflag &^= syscall.ECHO
+	// Do not let Ctrl+S / Ctrl+Q freeze the console. A stray Ctrl+S leaves
+	// the menu looking alive but output stops, which is easily mistaken for
+	// "keyboard not working".
+	t.Iflag &^= syscall.IXON | syscall.IXOFF
 	t.Cc[5] = 2 // VTIME = 2 deciseconds = 200ms
 	t.Cc[6] = 0 // VMIN = 0
 	tcSet(fd, &t)
