@@ -2071,6 +2071,7 @@ type percDiskInfo struct {
 	Slot   int
 	DID    int
 	DG     int
+	Raid   string // RAID0 / RAID5 / ...
 	Serial string
 	Model  string
 	Intf   string // SATA / SAS
@@ -2120,7 +2121,37 @@ func diskPercMap() (map[int][]percDiskInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parsePercDiskOutput(out), nil
+	res := parsePercDiskOutput(out)
+	// VD list carries the RAID level (Dell H330: 0/0 RAID0 ...).
+	if vdOut, verr := run(tool, "/c0/vall", "show"); verr == nil {
+		raid := parsePercRaidLevels(vdOut)
+		for _, disks := range res {
+			for i := range disks {
+				disks[i].Raid = raid[disks[i].DG]
+			}
+		}
+	}
+	return res, nil
+}
+
+func parsePercRaidLevels(out string) map[int]string {
+	m := map[int]string{}
+	re := regexp.MustCompile(`^(\d+)/\d+\s+(\w+)`)
+	for _, line := range strings.Split(out, "\n") {
+		mm := re.FindStringSubmatch(strings.TrimSpace(line))
+		if mm == nil {
+			continue
+		}
+		dg, err := strconv.Atoi(mm[1])
+		if err != nil {
+			continue
+		}
+		raid := strings.ToUpper(mm[2])
+		if strings.HasPrefix(raid, "RAID") {
+			m[dg] = raid
+		}
+	}
+	return m
 }
 
 // parsePercDiskOutput parses "perccli64 /c0/eall/sall show all" (Dell PERC,
@@ -2175,9 +2206,6 @@ func parsePercDiskOutput(out string) map[int][]percDiskInfo {
 }
 
 func percSlotLabel(d percDiskInfo) string {
-	if d.EID >= 0 {
-		return fmt.Sprintf("%d:%d", d.EID, d.Slot)
-	}
 	return fmt.Sprintf("%02d", d.Slot)
 }
 
@@ -2187,6 +2215,7 @@ type hpDiskInfo struct {
 	Port   string
 	Box    int
 	Bay    int
+	Raid   string // RAID0 / RAID5 / ...
 	Serial string
 	Model  string
 	Intf   string // SATA / SAS / NVMe
@@ -2256,6 +2285,7 @@ func parseHPDiskConfig(out string) map[string][]hpDiskInfo {
 	var cur *hpArrayInfo
 	var pd *hpDiskInfo
 	inLD := false
+	curRaid := ""
 	flushPD := func() {
 		if cur != nil && pd != nil {
 			cur.pds = append(cur.pds, *pd)
@@ -2271,6 +2301,7 @@ func parseHPDiskConfig(out string) map[string][]hpDiskInfo {
 			flushPD()
 			cur = nil
 			inLD = false
+			curRaid = ""
 			continue
 		}
 		if strings.HasPrefix(strings.ToLower(trim), "unassigned") {
@@ -2288,6 +2319,7 @@ func parseHPDiskConfig(out string) map[string][]hpDiskInfo {
 			cur = &hpArrayInfo{}
 			arrays = append(arrays, cur)
 			inLD = false
+			curRaid = ""
 			continue
 		}
 		if cur == nil {
@@ -2296,6 +2328,10 @@ func parseHPDiskConfig(out string) map[string][]hpDiskInfo {
 		if strings.HasPrefix(trim, "Logical Drive:") {
 			flushPD()
 			inLD = true
+			continue
+		}
+		if strings.HasPrefix(trim, "Fault Tolerance:") {
+			curRaid = hpRaidLevel(strings.TrimSpace(strings.TrimPrefix(trim, "Fault Tolerance:")))
 			continue
 		}
 		if strings.HasPrefix(trim, "Disk Name:") {
@@ -2310,7 +2346,7 @@ func parseHPDiskConfig(out string) map[string][]hpDiskInfo {
 		if m := hpPDRe.FindStringSubmatch(trim); m != nil {
 			flushPD()
 			inLD = false
-			pd = &hpDiskInfo{Slot: strings.Trim(m[1], `"`)}
+			pd = &hpDiskInfo{Slot: strings.Trim(m[1], `"`), Raid: curRaid}
 			continue
 		}
 		if pd == nil {
@@ -2350,6 +2386,26 @@ func parseHPDiskConfig(out string) map[string][]hpDiskInfo {
 		}
 	}
 	return res
+}
+
+func hpRaidLevel(ft string) string {
+	switch strings.TrimSpace(ft) {
+	case "0":
+		return "RAID0"
+	case "1":
+		return "RAID1"
+	case "5":
+		return "RAID5"
+	case "6":
+		return "RAID6"
+	case "10", "1+0":
+		return "RAID10"
+	case "50":
+		return "RAID50"
+	case "60":
+		return "RAID60"
+	}
+	return ""
 }
 
 func hpBusMedia(s string) (bus, media string) {
@@ -2549,11 +2605,17 @@ func showDisks() {
 					children = nil
 					if len(disks) == 1 {
 						slot = percSlotLabel(first)
+						if first.Raid != "" {
+							slot = first.Raid + ":" + slot
+						}
 						if first.Serial != "" {
 							serial = first.Serial
 						}
 					} else {
-						slot = fmt.Sprintf("RAID(%d)", len(disks))
+						slot = first.Raid
+						if slot == "" {
+							slot = fmt.Sprintf("RAID(%d)", len(disks))
+						}
 						serial = "-"
 						for _, d := range disks {
 							children = append(children, diskChild{
@@ -2579,11 +2641,17 @@ func showDisks() {
 					if len(labels) > 0 {
 						slot = labels[0]
 					}
+					if first.Raid != "" {
+						slot = first.Raid + ":" + slot
+					}
 					if first.Serial != "" {
 						serial = first.Serial
 					}
 				} else {
-					slot = fmt.Sprintf("RAID(%d)", len(disks))
+					slot = first.Raid
+					if slot == "" {
+						slot = fmt.Sprintf("RAID(%d)", len(disks))
+					}
 					serial = "-"
 					for i, d := range disks {
 						label := ""
@@ -2624,8 +2692,8 @@ func showDisks() {
 	// Keep it within 80 columns; long fields are truncated.
 	const (
 		deviceW   = 12
-		slotW     = 8
-		serialW   = 37
+		slotW     = 12
+		serialW   = 33
 		lineWidth = 21 + deviceW + slotW + serialW
 	)
 

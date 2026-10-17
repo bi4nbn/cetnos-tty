@@ -224,6 +224,21 @@ func TestValidTTYName(t *testing.T) {
 	}
 }
 
+func TestParsePercRaidLevels(t *testing.T) {
+	out := `
+---------------------------------------------------------------
+DG/VD TYPE  State Access Consist Cache Cac sCC       Size Name 
+---------------------------------------------------------------
+0/0   RAID0 Optl  RW     Yes     NRWTD -   OFF 744.625 GB      
+1/1   RAID5 Optl  RW     Yes     NRWTD -   OFF   5.457 TB      
+---------------------------------------------------------------
+`
+	m := parsePercRaidLevels(out)
+	if m[0] != "RAID0" || m[1] != "RAID5" {
+		t.Fatalf("parsePercRaidLevels = %#v", m)
+	}
+}
+
 func TestParseHPDiskConfig(t *testing.T) {
 	out := `
 Smart Array P440ar in Slot 0 (Embedded)   (sn: TEST)
@@ -235,6 +250,7 @@ Smart Array P440ar in Slot 0 (Embedded)   (sn: TEST)
       Unused Space: 1 MB
       Logical Drive: 1
          Size: 1.46 TB
+         Fault Tolerance: 5
          Status: OK
          Disk Name: /dev/sda
          Logical Drive Label: TEST
@@ -270,6 +286,9 @@ Smart Array P440ar in Slot 0 (Embedded)   (sn: TEST)
 	}
 	if pds[0].Model != "ATA INTEL SSDSC2BB80" {
 		t.Errorf("model = %q", pds[0].Model)
+	}
+	if pds[0].Raid != "RAID5" {
+		t.Errorf("raid = %q, want RAID5", pds[0].Raid)
 	}
 	if pds[0].Intf != "SATA" || pds[0].Med != "SSD" {
 		t.Errorf("type = %s/%s, want SATA/SSD", pds[0].Intf, pds[0].Med)
@@ -329,10 +348,10 @@ Model Number = INTEL SSDSC2BB800G6R
 	} else if got[0].Slot != 12 || got[0].Med != "SSD" || got[0].Serial != "BTWA54910752800HGN" {
 		t.Errorf("DG0 drive = %+v", got[0])
 	}
-	if got := percSlotLabel(m[1][0]); got != "32:0" {
-		t.Errorf("percSlotLabel = %q, want 32:0", got)
+	if got := percSlotLabel(m[1][0]); got != "00" {
+		t.Errorf("percSlotLabel = %q, want 00", got)
 	}
-	if got := percSlotLabel(m[0][0]); got != "32:12" {
-		t.Errorf("percSlotLabel = %q, want 32:12", got)
+	if got := percSlotLabel(m[0][0]); got != "12" {
+		t.Errorf("percSlotLabel = %q, want 12", got)
 	}
 }
