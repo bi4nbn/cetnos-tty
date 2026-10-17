@@ -2827,14 +2827,16 @@ func showDisks() {
 					if childSerial == "" {
 						childSerial = "-"
 					}
-					// Slot is shown in the tree branch; there is no separate
-					// SLOT column on a child line, leaving more room for serial.
-					label := truncateStr(prefix+" "+childSlot, deviceW)
-					fmt.Printf("  %-*s %-6s %-9s %s\n",
+					// Keep the tree marker in DEVICE and put the slot back
+					// in SLOT so every column, especially SERIAL, aligns
+					// with the table header.
+					label := truncateStr(prefix, deviceW)
+					fmt.Printf("  %-*s %-6s %-9s %-*s %s\n",
 						deviceW, label,
 						childSize,
 						truncateStr(childType, 9),
-						truncateStr(childSerial, 45))
+						slotW, truncateStr(childSlot, slotW),
+						truncateStr(childSerial, serialW))
 				}
 			}
 			if page+1 < totalPages {
