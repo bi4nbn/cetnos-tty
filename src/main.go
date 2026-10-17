@@ -2460,7 +2460,6 @@ func showDisks() {
 		display string
 		size    string
 		dt      string
-		model   string
 		slot    string
 		serial  string
 	}
@@ -2475,7 +2474,7 @@ func showDisks() {
 			display = dev + " [SYS]"
 		}
 		dt := diskType(dev)
-		_, model, serial := diskInfo(dev)
+		_, _, serial := diskInfo(dev)
 		slot := "-"
 		// For sdX behind perccli, override udevadm controller info with
 		// physical disk info. RAID mode: sysfs target == DG. Passthrough:
@@ -2488,9 +2487,6 @@ func showDisks() {
 				}
 				if found && len(disks) > 0 {
 					first := disks[0]
-					if first.Model != "" {
-						model = first.Model
-					}
 					if first.Intf != "" && first.Med != "" {
 						dt = first.Intf + "-" + first.Med
 					}
@@ -2515,9 +2511,6 @@ func showDisks() {
 		if hm, ok := diskHPMapCache(); ok {
 			if disks, found := hm[dev]; found && len(disks) > 0 {
 				first := disks[0]
-				if first.Model != "" {
-					model = first.Model
-				}
 				if first.Intf != "" && first.Med != "" {
 					dt = first.Intf + "-" + first.Med
 				}
@@ -2544,7 +2537,6 @@ func showDisks() {
 			display: display,
 			size:    size,
 			dt:      dt,
-			model:   model,
 			slot:    slot,
 			serial:  serial,
 		})
@@ -2561,9 +2553,8 @@ func showDisks() {
 	const (
 		deviceW   = 12
 		slotW     = 8
-		modelW    = 18
-		serialW   = 18
-		lineWidth = 22 + deviceW + slotW + modelW + serialW
+		serialW   = 37
+		lineWidth = 21 + deviceW + slotW + serialW
 	)
 
 	printHeader := func(page, total int) {
@@ -2576,8 +2567,8 @@ func showDisks() {
 		right := pad - left
 		fmt.Printf("%s %s %s\n", strings.Repeat("=", left), title, strings.Repeat("=", right))
 		fmt.Println()
-		fmt.Printf("  %-*s %-6s %-9s %-*s %-*s %s\n",
-			deviceW, "DEVICE", "SIZE", "TYPE", slotW, "SLOT", modelW, "MODEL", "SERIAL")
+		fmt.Printf("  %-*s %-6s %-9s %-*s %s\n",
+			deviceW, "DEVICE", "SIZE", "TYPE", slotW, "SLOT", "SERIAL")
 		fmt.Println("  " + strings.Repeat("-", lineWidth-2))
 	}
 
@@ -2601,12 +2592,11 @@ func showDisks() {
 				if serial == "" {
 					serial = "-"
 				}
-				fmt.Printf("  %-*s %-6s %-9s %-*s %-*s %s\n",
+				fmt.Printf("  %-*s %-6s %-9s %-*s %s\n",
 					deviceW, truncateStr(r.display, deviceW),
 					r.size,
 					truncateStr(r.dt, 9),
 					slotW, truncateStr(r.slot, slotW),
-					modelW, truncateStr(r.model, modelW),
 					truncateStr(serial, serialW))
 			}
 			if page+1 < totalPages {
