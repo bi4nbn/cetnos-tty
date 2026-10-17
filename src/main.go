@@ -2355,9 +2355,9 @@ func hpBusMedia(s string) (bus, media string) {
 	return
 }
 
-// hpSlotList prefers compact bay numbers (02,04,06). If bays repeat across
+// hpSlotLabels prefers compact bay numbers (02,04,06). If bays repeat across
 // ports/boxes it falls back to full port:box:bay identifiers.
-func hpSlotList(disks []hpDiskInfo) string {
+func hpSlotLabels(disks []hpDiskInfo) []string {
 	seen := map[int]bool{}
 	allBays := true
 	for _, d := range disks {
@@ -2378,7 +2378,11 @@ func hpSlotList(disks []hpDiskInfo) string {
 			parts = append(parts, fmt.Sprintf("%s:%d:%d", d.Port, d.Box, d.Bay))
 		}
 	}
-	return strings.Join(parts, ",")
+	return parts
+}
+
+func hpSlotList(disks []hpDiskInfo) string {
+	return strings.Join(hpSlotLabels(disks), ",")
 }
 
 // sysfsTarget returns the SCSI target id for a block device (== VD/DG number).
@@ -2409,6 +2413,36 @@ func truncateStr(s string, n int) string {
 		return s[:n]
 	}
 	return s[:n-3] + "..."
+}
+
+// getTTYSize returns the terminal size. LINES/COLUMNS are used as a fallback
+// when stdout is not a tty (pipes/tests).
+func getTTYSize() (rows, cols int) {
+	var ws struct {
+		Row, Col, Xpixel, Ypixel uint16
+	}
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, os.Stdout.Fd(),
+		uintptr(0x5413), uintptr(unsafe.Pointer(&ws)))
+	if errno == 0 {
+		rows, cols = int(ws.Row), int(ws.Col)
+	}
+	if rows <= 0 {
+		if v, err := strconv.Atoi(os.Getenv("LINES")); err == nil {
+			rows = v
+		}
+	}
+	if cols <= 0 {
+		if v, err := strconv.Atoi(os.Getenv("COLUMNS")); err == nil {
+			cols = v
+		}
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+	if cols <= 0 {
+		cols = 80
+	}
+	return
 }
 
 func showDisks() {
@@ -2456,12 +2490,17 @@ func showDisks() {
 		deduped = append(deduped, dev)
 	}
 
+	type diskChild struct {
+		slot   string
+		serial string
+	}
 	type diskRow struct {
-		display string
-		size    string
-		dt      string
-		slot    string
-		serial  string
+		display  string
+		size     string
+		dt       string
+		slot     string
+		serial   string
+		children []diskChild
 	}
 	var rows []diskRow
 	for _, dev := range deduped {
@@ -2476,6 +2515,7 @@ func showDisks() {
 		dt := diskType(dev)
 		_, _, serial := diskInfo(dev)
 		slot := "-"
+		var children []diskChild
 		// For sdX behind perccli, override udevadm controller info with
 		// physical disk info. RAID mode: sysfs target == DG. Passthrough:
 		// sysfs target == DID (stored as negative key -DID-1).
@@ -2490,18 +2530,21 @@ func showDisks() {
 					if first.Intf != "" && first.Med != "" {
 						dt = first.Intf + "-" + first.Med
 					}
-					// Build slot string: "00" or "00,01" or "00,01,02"
-					slotParts := []string{}
-					snParts := []string{}
-					for _, d := range disks {
-						slotParts = append(slotParts, fmt.Sprintf("%02d", d.Slot))
-						if d.Serial != "" {
-							snParts = append(snParts, d.Serial)
+					children = nil
+					if len(disks) == 1 {
+						slot = fmt.Sprintf("%02d", first.Slot)
+						if first.Serial != "" {
+							serial = first.Serial
 						}
-					}
-					slot = strings.Join(slotParts, ",")
-					if len(snParts) > 0 {
-						serial = strings.Join(snParts, ",")
+					} else {
+						slot = fmt.Sprintf("RAID(%d)", len(disks))
+						serial = "-"
+						for _, d := range disks {
+							children = append(children, diskChild{
+								slot:   fmt.Sprintf("%02d", d.Slot),
+								serial: d.Serial,
+							})
+						}
 					}
 				}
 			}
@@ -2514,17 +2557,28 @@ func showDisks() {
 				if first.Intf != "" && first.Med != "" {
 					dt = first.Intf + "-" + first.Med
 				}
-				if s := hpSlotList(disks); s != "" {
-					slot = s
-				}
-				snParts := []string{}
-				for _, d := range disks {
-					if d.Serial != "" {
-						snParts = append(snParts, d.Serial)
+				labels := hpSlotLabels(disks)
+				children = nil
+				if len(disks) == 1 {
+					if len(labels) > 0 {
+						slot = labels[0]
 					}
-				}
-				if len(snParts) > 0 {
-					serial = strings.Join(snParts, ",")
+					if first.Serial != "" {
+						serial = first.Serial
+					}
+				} else {
+					slot = fmt.Sprintf("RAID(%d)", len(disks))
+					serial = "-"
+					for i, d := range disks {
+						label := ""
+						if i < len(labels) {
+							label = labels[i]
+						}
+						children = append(children, diskChild{
+							slot:   label,
+							serial: d.Serial,
+						})
+					}
 				}
 			}
 		}
@@ -2534,20 +2588,22 @@ func showDisks() {
 			}
 		}
 		rows = append(rows, diskRow{
-			display: display,
-			size:    size,
-			dt:      dt,
-			slot:    slot,
-			serial:  serial,
+			display:  display,
+			size:     size,
+			dt:       dt,
+			slot:     slot,
+			serial:   serial,
+			children: children,
 		})
 	}
 
-	const pageSize = 5
-	totalPages := (len(rows) + pageSize - 1) / pageSize
-	if totalPages == 0 {
-		totalPages = 1
+	// Fill the terminal vertically. Header takes 4 lines, footer/pause takes
+	// 3 lines; the remaining rows are available for disk data.
+	termRows, _ := getTTYSize()
+	pageLines := termRows - 7
+	if pageLines < 5 {
+		pageLines = 5
 	}
-
 	// One fixed layout for every console (BIOS, UEFI, 80 or 128 columns).
 	// Keep it within 80 columns; long fields are truncated.
 	const (
@@ -2556,6 +2612,29 @@ func showDisks() {
 		serialW   = 37
 		lineWidth = 21 + deviceW + slotW + serialW
 	)
+
+	// Paginate by rendered lines so the page fills the terminal height.
+	// A RAID tree contributes one line per physical drive.
+	var pages [][]diskRow
+	var pageRows []diskRow
+	pageLineCount := 0
+	for _, r := range rows {
+		lines := 1 + len(r.children)
+		if len(pageRows) > 0 && pageLineCount+lines > pageLines {
+			pages = append(pages, pageRows)
+			pageRows = nil
+			pageLineCount = 0
+		}
+		pageRows = append(pageRows, r)
+		pageLineCount += lines
+	}
+	if len(pageRows) > 0 {
+		pages = append(pages, pageRows)
+	}
+	totalPages := len(pages)
+	if totalPages == 0 {
+		totalPages = 1
+	}
 
 	printHeader := func(page, total int) {
 		title := fmt.Sprintf("DISKS (%d/%d)", page, total)
@@ -2581,13 +2660,7 @@ func showDisks() {
 				fmt.Print("\033[2J\033[H")
 			}
 			printHeader(page+1, totalPages)
-			start := page * pageSize
-			end := start + pageSize
-			if end > len(rows) {
-				end = len(rows)
-			}
-			for i := start; i < end; i++ {
-				r := rows[i]
+			for _, r := range pages[page] {
 				serial := r.serial
 				if serial == "" {
 					serial = "-"
@@ -2598,6 +2671,22 @@ func showDisks() {
 					truncateStr(r.dt, 9),
 					slotW, truncateStr(r.slot, slotW),
 					truncateStr(serial, serialW))
+				for ci, ch := range r.children {
+					prefix := "|-"
+					if ci == len(r.children)-1 {
+						prefix = "`-"
+					}
+					childSlot := ch.slot
+					if childSlot == "" {
+						childSlot = "-"
+					}
+					childSerial := ch.serial
+					if childSerial == "" {
+						childSerial = "-"
+					}
+					fmt.Printf("  %s %-6s %s\n", prefix,
+						truncateStr(childSlot, 6), truncateStr(childSerial, 60))
+				}
 			}
 			if page+1 < totalPages {
 				a, intr := ask(fmt.Sprintf("\n  -- Page %d/%d -- Enter=next, q=quit: ", page+1, totalPages))
