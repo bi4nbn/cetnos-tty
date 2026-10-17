@@ -223,3 +223,84 @@ func TestValidTTYName(t *testing.T) {
 		}
 	}
 }
+
+func TestParseHPDiskConfig(t *testing.T) {
+	out := `
+Smart Array P440ar in Slot 0 (Embedded)   (sn: TEST)
+
+   Port Name: 1I
+
+   Array: A
+      Interface Type: Solid State SATA
+      Unused Space: 1 MB
+      Logical Drive: 1
+         Size: 1.46 TB
+         Status: OK
+         Disk Name: /dev/sda
+         Logical Drive Label: TEST
+      physicaldrive 1I:0:2
+         Port: 1I
+         Box: 0
+         Bay: 2
+         Interface Type: Solid State SATA
+         Serial Number: SN2
+         Model: ATA     INTEL SSDSC2BB80
+      physicaldrive 1I:0:4
+         Port: 1I
+         Box: 0
+         Bay: 4
+         Interface Type: Solid State SATA
+         Serial Number: SN4
+         Model: ATA     INTEL SSDSC2BB80
+      physicaldrive 2I:0:6
+         Port: 2I
+         Box: 0
+         Bay: 6
+         Interface Type: Solid State SATA
+         Serial Number: SN6
+         Model: ATA     INTEL SSDSC2BB80
+`
+	m := parseHPDiskConfig(out)
+	pds, ok := m["sda"]
+	if !ok || len(pds) != 3 {
+		t.Fatalf("parseHPDiskConfig sda = %+v, want 3 drives", pds)
+	}
+	if got := hpSlotList(pds); got != "02,04,06" {
+		t.Errorf("hpSlotList = %q, want 02,04,06", got)
+	}
+	if pds[0].Model != "ATA INTEL SSDSC2BB80" {
+		t.Errorf("model = %q", pds[0].Model)
+	}
+	if pds[0].Intf != "SATA" || pds[0].Med != "SSD" {
+		t.Errorf("type = %s/%s, want SATA/SSD", pds[0].Intf, pds[0].Med)
+	}
+	if pds[2].Serial != "SN6" || pds[2].Bay != 6 {
+		t.Errorf("third drive = %+v", pds[2])
+	}
+
+	// Same bay number on two ports must fall back to full identifiers.
+	dup := []hpDiskInfo{
+		{Slot: "1I:0:1", Port: "1I", Bay: 1},
+		{Slot: "2I:0:1", Port: "2I", Bay: 1},
+	}
+	if got := hpSlotList(dup); got != "1I:0:1,2I:0:1" {
+		t.Errorf("duplicate-bay slots = %q", got)
+	}
+}
+
+func TestHPBusMedia(t *testing.T) {
+	tests := []struct {
+		in        string
+		bus, medi string
+	}{
+		{"Solid State SATA", "SATA", "SSD"},
+		{"SAS", "SAS", ""},
+		{"NVMe", "NVMe", ""},
+	}
+	for _, tt := range tests {
+		bus, med := hpBusMedia(tt.in)
+		if bus != tt.bus || med != tt.medi {
+			t.Errorf("hpBusMedia(%q) = %s/%s, want %s/%s", tt.in, bus, med, tt.bus, tt.medi)
+		}
+	}
+}

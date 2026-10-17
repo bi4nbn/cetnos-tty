@@ -2165,6 +2165,222 @@ func diskPercMap() (map[int][]percDiskInfo, error) {
 	return res, nil
 }
 
+// hpDiskInfo holds physical drive info from ssacli/hpssacli.
+type hpDiskInfo struct {
+	Slot   string // port:box:bay, e.g. 1I:0:2
+	Port   string
+	Box    int
+	Bay    int
+	Serial string
+	Model  string
+	Intf   string // SATA / SAS / NVMe
+	Med    string // SSD / HDD
+}
+
+type hpArrayInfo struct {
+	lds []string // /dev/sdX names of logical drives in this array
+	pds []hpDiskInfo
+}
+
+var hpCache map[string][]hpDiskInfo
+var hpOnce sync.Once
+
+func diskHPMapCache() (map[string][]hpDiskInfo, bool) {
+	hpOnce.Do(func() {
+		m, err := diskHPMap()
+		if err == nil && len(m) > 0 {
+			hpCache = m
+		}
+	})
+	return hpCache, hpCache != nil
+}
+
+func hpToolPath() string {
+	for _, name := range []string{"ssacli", "hpssacli", "hpacucli"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+	for _, p := range []string{
+		"/usr/sbin/ssacli",
+		"/usr/sbin/hpssacli",
+		"/usr/sbin/hpacucli",
+		"/opt/hp/hpssacli/bld/hpssacli",
+		"/opt/hp/hpacucli/bld/hpacucli",
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+func diskHPMap() (map[string][]hpDiskInfo, error) {
+	tool := hpToolPath()
+	if tool == "" {
+		return nil, fmt.Errorf("no ssacli/hpssacli/hpacucli found")
+	}
+	out, err := run(tool, "ctrl", "all", "show", "config", "detail")
+	if err != nil {
+		return nil, err
+	}
+	return parseHPDiskConfig(out), nil
+}
+
+var (
+	hpArrayRe = regexp.MustCompile(`^(?:Array:\s*|Array\s+)([A-Za-z0-9]+)\b`)
+	hpPDRe    = regexp.MustCompile(`(?i)^physicaldrive\s+(\S+)`)
+)
+
+// parseHPDiskConfig maps each logical-drive block device to the physical
+// drives of its array. HP Smart Array drives are usually hidden from the OS
+// ("Drive exposed to OS: False"), so this is the only way to show bay numbers.
+func parseHPDiskConfig(out string) map[string][]hpDiskInfo {
+	var arrays []*hpArrayInfo
+	var cur *hpArrayInfo
+	var pd *hpDiskInfo
+	inLD := false
+	flushPD := func() {
+		if cur != nil && pd != nil {
+			cur.pds = append(cur.pds, *pd)
+			pd = nil
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == "" {
+			continue
+		}
+		if strings.HasPrefix(trim, "Smart Array ") || strings.HasPrefix(trim, "HP Smart Array ") {
+			flushPD()
+			cur = nil
+			inLD = false
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(trim), "unassigned") {
+			flushPD()
+			cur = nil
+			inLD = false
+			continue
+		}
+		// "Array Type: Data" is a controller property, not an array header.
+		if strings.HasPrefix(trim, "Array Type:") {
+			continue
+		}
+		if m := hpArrayRe.FindStringSubmatch(trim); m != nil {
+			flushPD()
+			cur = &hpArrayInfo{}
+			arrays = append(arrays, cur)
+			inLD = false
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+		if strings.HasPrefix(trim, "Logical Drive:") {
+			flushPD()
+			inLD = true
+			continue
+		}
+		if strings.HasPrefix(trim, "Disk Name:") {
+			if inLD {
+				f := strings.Fields(trim)
+				if len(f) >= 3 {
+					cur.lds = append(cur.lds, strings.TrimPrefix(f[2], "/dev/"))
+				}
+			}
+			continue
+		}
+		if m := hpPDRe.FindStringSubmatch(trim); m != nil {
+			flushPD()
+			inLD = false
+			pd = &hpDiskInfo{Slot: strings.Trim(m[1], `"`)}
+			continue
+		}
+		if pd == nil {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(trim, "Port:"):
+			pd.Port = strings.TrimSpace(strings.TrimPrefix(trim, "Port:"))
+		case strings.HasPrefix(trim, "Box:"):
+			pd.Box, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(trim, "Box:")))
+		case strings.HasPrefix(trim, "Bay:"):
+			pd.Bay, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(trim, "Bay:")))
+		case strings.HasPrefix(trim, "Interface Type:"):
+			pd.Intf, pd.Med = hpBusMedia(strings.TrimSpace(strings.TrimPrefix(trim, "Interface Type:")))
+		case strings.HasPrefix(trim, "Rotational Speed:"):
+			v := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(trim, "Rotational Speed:")))
+			if strings.Contains(v, "solid state") {
+				pd.Med = "SSD"
+			} else if strings.Contains(v, "rpm") && pd.Med == "" {
+				pd.Med = "HDD"
+			}
+		case strings.HasPrefix(trim, "Serial Number:"):
+			pd.Serial = strings.TrimSpace(strings.TrimPrefix(trim, "Serial Number:"))
+		case strings.HasPrefix(trim, "Model:"):
+			pd.Model = strings.Join(strings.Fields(strings.TrimSpace(strings.TrimPrefix(trim, "Model:"))), " ")
+		}
+	}
+	flushPD()
+
+	res := map[string][]hpDiskInfo{}
+	for _, a := range arrays {
+		if len(a.lds) == 0 || len(a.pds) == 0 {
+			continue
+		}
+		for _, dev := range a.lds {
+			res[dev] = append([]hpDiskInfo(nil), a.pds...)
+		}
+	}
+	return res
+}
+
+func hpBusMedia(s string) (bus, media string) {
+	up := strings.ToUpper(s)
+	switch {
+	case strings.Contains(up, "SATA"):
+		bus = "SATA"
+	case strings.Contains(up, "SAS"):
+		bus = "SAS"
+	case strings.Contains(up, "NVME"):
+		bus = "NVMe"
+	}
+	switch {
+	case strings.Contains(up, "SSD"), strings.Contains(up, "SOLID STATE"):
+		media = "SSD"
+	case strings.Contains(up, "HDD"):
+		media = "HDD"
+	}
+	return
+}
+
+// hpSlotList prefers compact bay numbers (02,04,06). If bays repeat across
+// ports/boxes it falls back to full port:box:bay identifiers.
+func hpSlotList(disks []hpDiskInfo) string {
+	seen := map[int]bool{}
+	allBays := true
+	for _, d := range disks {
+		if d.Bay <= 0 || seen[d.Bay] {
+			allBays = false
+			break
+		}
+		seen[d.Bay] = true
+	}
+	var parts []string
+	for _, d := range disks {
+		switch {
+		case allBays:
+			parts = append(parts, fmt.Sprintf("%02d", d.Bay))
+		case d.Slot != "":
+			parts = append(parts, d.Slot)
+		case d.Port != "" && d.Bay > 0:
+			parts = append(parts, fmt.Sprintf("%s:%d:%d", d.Port, d.Box, d.Bay))
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
 // sysfsTarget returns the SCSI target id for a block device (== VD/DG number).
 func sysfsTarget(dev string) int {
 	link, err := os.Readlink("/sys/class/block/" + dev)
@@ -2194,7 +2410,7 @@ func showDisks() {
 	}
 	fmt.Println("========================== DISKS ===========================")
 	fmt.Println()
-	fmt.Printf("  %-12s %-6s %-8s %-16s %-8s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
+	fmt.Printf("  %-12s %-6s %-8s %-20s %-20s %s\n", "DEV", "SIZE", "TYPE", "MODEL", "SLOT", "SERIAL")
 	fmt.Println("  ------------------------------------------------------------")
 	// Dedup by serial: the same physical SSD may appear as multiple block
 	// devices (NVMe multi-path / multiple namespaces, e.g. nvme0n1 +
@@ -2275,19 +2491,44 @@ func showDisks() {
 				}
 			}
 		}
+		// HP Smart Array: physical drives are normally hidden from the OS, so
+		// use ssacli to map the logical volume (/dev/sda) back to its bays.
+		if hm, ok := diskHPMapCache(); ok {
+			if disks, found := hm[dev]; found && len(disks) > 0 {
+				first := disks[0]
+				if first.Model != "" {
+					model = first.Model
+				}
+				if first.Intf != "" && first.Med != "" {
+					dt = first.Intf + "-" + first.Med
+				}
+				if s := hpSlotList(disks); s != "" {
+					slot = s
+				}
+				snParts := []string{}
+				for _, d := range disks {
+					if d.Serial != "" {
+						snParts = append(snParts, d.Serial)
+					}
+				}
+				if len(snParts) > 0 {
+					serial = strings.Join(snParts, ",")
+				}
+			}
+		}
 		if slot == "-" {
 			if t := sysfsTarget(dev); t >= 0 {
 				slot = fmt.Sprintf("%02d", t)
 			}
 		}
-		if len(model) > 16 {
-			model = model[:16]
+		if len(model) > 20 {
+			model = model[:20]
 		}
 		if len(serial) > 60 {
 			serial = serial[:60]
 		}
 		shown++
-		fmt.Printf("  %-12s %-6s %-8s %-16s %-8s %s\n", display, size, dt, model, slot, serial)
+		fmt.Printf("  %-12s %-6s %-8s %-20s %-20s %s\n", display, size, dt, model, slot, serial)
 		if shown%20 == 0 && shown < len(deduped) {
 			a, intr := ask("  -- more -- Press Enter for next page (q+Enter to stop): ")
 			if intr {
