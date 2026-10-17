@@ -294,6 +294,7 @@ Smart Array P440ar in Slot 0 (Embedded)   (sn: TEST)
          Port: 1I
          Box: 0
          Bay: 2
+         Status: OK
          Size: 800 GB
          Interface Type: Solid State SATA
          Serial Number: SN2
@@ -330,6 +331,12 @@ Smart Array P440ar in Slot 0 (Embedded)   (sn: TEST)
 	if pds[0].Size != "800G" {
 		t.Errorf("size = %q, want 800G", pds[0].Size)
 	}
+	if pds[0].Status != "OK" || pds[0].LDStatus != "OK" {
+		t.Errorf("status = %q ld = %q, want OK/OK", pds[0].Status, pds[0].LDStatus)
+	}
+	if got := hpHealth(pds[0]); got != "OK" {
+		t.Errorf("hpHealth = %q, want OK", got)
+	}
 	if pds[0].Intf != "SATA" || pds[0].Med != "SSD" {
 		t.Errorf("type = %s/%s, want SATA/SSD", pds[0].Intf, pds[0].Med)
 	}
@@ -364,12 +371,43 @@ func TestHPBusMedia(t *testing.T) {
 	}
 }
 
+func TestHealthHelpers(t *testing.T) {
+	cases := []struct {
+		pd   percDiskInfo
+		want string
+	}{
+		{percDiskInfo{State: "Onln"}, "OK"},
+		{percDiskInfo{State: "Onln", MediaErr: 1}, "WARN"},
+		{percDiskInfo{State: "Rbld"}, "WARN"},
+		{percDiskInfo{State: "Offln"}, "BAD"},
+		{percDiskInfo{State: "UBad"}, "BAD"},
+	}
+	for _, c := range cases {
+		if got := percHealth(c.pd); got != c.want {
+			t.Errorf("percHealth(%+v) = %q, want %q", c.pd, got, c.want)
+		}
+	}
+	if got := hpHealth(hpDiskInfo{Status: "OK", LDStatus: "Degraded"}); got != "WARN" {
+		t.Errorf("hpHealth degraded = %q, want WARN", got)
+	}
+	if got := hpHealth(hpDiskInfo{Status: "Failed"}); got != "BAD" {
+		t.Errorf("hpHealth failed = %q, want BAD", got)
+	}
+	if got := worstHealth("OK", "WARN", "OK"); got != "WARN" {
+		t.Errorf("worstHealth = %q, want WARN", got)
+	}
+}
+
 func TestParsePercDiskOutputDell(t *testing.T) {
 	out := `Drive /c0/e32/s0 :
 ================
 32:0      0 Onln   1 5.457 TB SATA HDD N   N  512B ST6000NM0115-1YZ110 U  -    
 SN =             ZAD25CH0
 Model Number = ST6000NM0115-1YZ110
+Media Error Count = 2
+Other Error Count = 0
+Predictive Failure Count = 1
+S.M.A.R.T alert flagged by drive = Yes
 
 Drive /c0/e32/s12 :
 ================

@@ -2067,16 +2067,21 @@ func diskSizeHuman(dev string) string {
 
 // percDiskInfo holds physical disk info from perccli64.
 type percDiskInfo struct {
-	EID    int
-	Slot   int
-	DID    int
-	DG     int
-	Raid   string // RAID0 / RAID5 / ...
-	Size   string
-	Serial string
-	Model  string
-	Intf   string // SATA / SAS
-	Med    string // SSD / HDD
+	EID      int
+	Slot     int
+	DID      int
+	DG       int
+	Raid     string // RAID0 / RAID5 / ...
+	Size     string
+	State    string // Onln / UGood / Rbld / Offln / UBad ...
+	Serial   string
+	Model    string
+	Intf     string // SATA / SAS
+	Med      string // SSD / HDD
+	MediaErr int
+	OtherErr int
+	PredFail int
+	Smart    bool
 }
 
 var percCache map[int][]percDiskInfo
@@ -2158,13 +2163,21 @@ func parsePercRaidLevels(out string) map[int]string {
 // parsePercDiskOutput parses "perccli64 /c0/eall/sall show all" (Dell PERC,
 // LSI MegaRAID). Dell H330 RAID0 output has one "Drive /c0/e32/sN" section per
 // physical drive; the table row carries EID:Slot, DID and DG.
+func afterEquals(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "=")
+	return strings.TrimSpace(s)
+}
+
 func parsePercDiskOutput(out string) map[int][]percDiskInfo {
 	res := map[int][]percDiskInfo{}
 	var curEID, curDG, curSlot, curDID int = -1, -1, -1, -1
-	var curSerial, curModel, curIntf, curMed, curSize string
+	var curSerial, curModel, curIntf, curMed, curSize, curState string
+	var curMediaErr, curOtherErr, curPredFail int
+	var curSmart bool
 	flush := func() {
 		if curSlot >= 0 && curDID >= 0 {
-			info := percDiskInfo{EID: curEID, Slot: curSlot, DID: curDID, DG: curDG, Size: curSize, Serial: curSerial, Model: curModel, Intf: curIntf, Med: curMed}
+			info := percDiskInfo{EID: curEID, Slot: curSlot, DID: curDID, DG: curDG, Size: curSize, State: curState, Serial: curSerial, Model: curModel, Intf: curIntf, Med: curMed, MediaErr: curMediaErr, OtherErr: curOtherErr, PredFail: curPredFail, Smart: curSmart}
 			if curDG >= 0 {
 				res[curDG] = append(res[curDG], info)
 			}
@@ -2172,7 +2185,7 @@ func parsePercDiskOutput(out string) map[int][]percDiskInfo {
 		}
 	}
 	// Table row: "32:0      0 Onln   1 5.457 TB SATA HDD N   N  512B ST6000NM0115-1YZ110"
-	tblRe := regexp.MustCompile(`^(\d+):(\d+)\s+(\d+)\s+\w+\s+(-?\d+)\s+([\d.]+)\s+(\w+)\s+(\w+)\s+(\w+)`)
+	tblRe := regexp.MustCompile(`^(\d+):(\d+)\s+(\d+)\s+(\w+)\s+(-?\d+)\s+([\d.]+)\s+(\w+)\s+(\w+)\s+(\w+)`)
 	snRe := regexp.MustCompile(`^SN\s*=\s*(\S+)`)
 	modelRe := regexp.MustCompile(`^Model Number\s*=\s*(.+)`)
 	driveRe := regexp.MustCompile(`^Drive /c\d+/e\d+/s\d+\s*:$`)
@@ -2181,17 +2194,20 @@ func parsePercDiskOutput(out string) map[int][]percDiskInfo {
 		if driveRe.MatchString(trim) {
 			flush()
 			curEID, curDG, curSlot, curDID = -1, -1, -1, -1
-			curSerial, curModel, curIntf, curMed, curSize = "", "", "", "", ""
+			curSerial, curModel, curIntf, curMed, curSize, curState = "", "", "", "", "", ""
+			curMediaErr, curOtherErr, curPredFail = 0, 0, 0
+			curSmart = false
 			continue
 		}
 		if m := tblRe.FindStringSubmatch(trim); m != nil {
 			curEID, _ = strconv.Atoi(m[1])
 			curSlot, _ = strconv.Atoi(m[2])
 			curDID, _ = strconv.Atoi(m[3])
-			curDG, _ = strconv.Atoi(m[4])
-			curSize = compactSize(m[5], m[6])
-			curIntf = strings.ToUpper(m[7])
-			curMed = strings.ToUpper(m[8])
+			curState = strings.TrimSpace(m[4])
+			curDG, _ = strconv.Atoi(m[5])
+			curSize = compactSize(m[6], m[7])
+			curIntf = strings.ToUpper(m[8])
+			curMed = strings.ToUpper(m[9])
 			continue
 		}
 		if m := snRe.FindStringSubmatch(trim); m != nil {
@@ -2202,6 +2218,17 @@ func parsePercDiskOutput(out string) map[int][]percDiskInfo {
 			curModel = strings.TrimSpace(m[1])
 			continue
 		}
+		switch {
+		case strings.HasPrefix(trim, "Media Error Count"):
+			curMediaErr, _ = strconv.Atoi(afterEquals(strings.TrimPrefix(trim, "Media Error Count")))
+		case strings.HasPrefix(trim, "Other Error Count"):
+			curOtherErr, _ = strconv.Atoi(afterEquals(strings.TrimPrefix(trim, "Other Error Count")))
+		case strings.HasPrefix(trim, "Predictive Failure Count"):
+			curPredFail, _ = strconv.Atoi(afterEquals(strings.TrimPrefix(trim, "Predictive Failure Count")))
+		case strings.HasPrefix(trim, "S.M.A.R.T alert flagged by drive"):
+			v := strings.ToLower(afterEquals(strings.TrimPrefix(trim, "S.M.A.R.T alert flagged by drive")))
+			curSmart = v == "yes"
+		}
 	}
 	flush()
 	return res
@@ -2211,18 +2238,81 @@ func percSlotLabel(d percDiskInfo) string {
 	return fmt.Sprintf("%02d", d.Slot)
 }
 
+func healthFromStatus(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" || s == "-" {
+		return "-"
+	}
+	for _, bad := range []string{"fail", "bad", "offln", "offline", "ubad", "missing", "msng", "error"} {
+		if strings.Contains(s, bad) {
+			return "BAD"
+		}
+	}
+	for _, warn := range []string{"predict", "degrad", "rebuild", "rbld", "copyback", "cpybck", "foreign", "transition"} {
+		if strings.Contains(s, warn) {
+			return "WARN"
+		}
+	}
+	for _, ok := range []string{"ok", "onln", "online", "ugood", "good", "optl", "optimal", "ghs", "dhs"} {
+		if strings.Contains(s, ok) {
+			return "OK"
+		}
+	}
+	return "-"
+}
+
+func percHealth(d percDiskInfo) string {
+	h := healthFromStatus(d.State)
+	if h == "BAD" {
+		return h
+	}
+	if d.MediaErr > 0 || d.OtherErr > 0 || d.PredFail > 0 || d.Smart {
+		return "WARN"
+	}
+	return h
+}
+
+func hpHealth(d hpDiskInfo) string {
+	h := healthFromStatus(d.Status)
+	lh := healthFromStatus(d.LDStatus)
+	if lh == "BAD" {
+		return "BAD"
+	}
+	if lh == "WARN" && h != "BAD" {
+		return "WARN"
+	}
+	if h == "-" {
+		return lh
+	}
+	return h
+}
+
+func worstHealth(hs ...string) string {
+	rank := map[string]int{"-": 0, "OK": 1, "WARN": 2, "BAD": 3}
+	worst, wr := "-", 0
+	for _, h := range hs {
+		r := rank[h]
+		if r > wr {
+			worst, wr = h, r
+		}
+	}
+	return worst
+}
+
 // hpDiskInfo holds physical drive info from ssacli/hpssacli.
 type hpDiskInfo struct {
-	Slot   string // port:box:bay, e.g. 1I:0:2
-	Port   string
-	Box    int
-	Bay    int
-	Raid   string // RAID0 / RAID5 / ...
-	Size   string
-	Serial string
-	Model  string
-	Intf   string // SATA / SAS / NVMe
-	Med    string // SSD / HDD
+	Slot     string // port:box:bay, e.g. 1I:0:2
+	Port     string
+	Box      int
+	Bay      int
+	Raid     string // RAID0 / RAID5 / ...
+	Size     string
+	Status   string // physical drive status
+	LDStatus string // logical drive status
+	Serial   string
+	Model    string
+	Intf     string // SATA / SAS / NVMe
+	Med      string // SSD / HDD
 }
 
 type hpArrayInfo struct {
@@ -2289,6 +2379,7 @@ func parseHPDiskConfig(out string) map[string][]hpDiskInfo {
 	var pd *hpDiskInfo
 	inLD := false
 	curRaid := ""
+	curLDStatus := ""
 	flushPD := func() {
 		if cur != nil && pd != nil {
 			cur.pds = append(cur.pds, *pd)
@@ -2305,6 +2396,7 @@ func parseHPDiskConfig(out string) map[string][]hpDiskInfo {
 			cur = nil
 			inLD = false
 			curRaid = ""
+			curLDStatus = ""
 			continue
 		}
 		if strings.HasPrefix(strings.ToLower(trim), "unassigned") {
@@ -2323,6 +2415,7 @@ func parseHPDiskConfig(out string) map[string][]hpDiskInfo {
 			arrays = append(arrays, cur)
 			inLD = false
 			curRaid = ""
+			curLDStatus = ""
 			continue
 		}
 		if cur == nil {
@@ -2331,6 +2424,11 @@ func parseHPDiskConfig(out string) map[string][]hpDiskInfo {
 		if strings.HasPrefix(trim, "Logical Drive:") {
 			flushPD()
 			inLD = true
+			curLDStatus = ""
+			continue
+		}
+		if strings.HasPrefix(trim, "Status:") && inLD && pd == nil {
+			curLDStatus = strings.TrimSpace(strings.TrimPrefix(trim, "Status:"))
 			continue
 		}
 		if strings.HasPrefix(trim, "Fault Tolerance:") {
@@ -2349,13 +2447,15 @@ func parseHPDiskConfig(out string) map[string][]hpDiskInfo {
 		if m := hpPDRe.FindStringSubmatch(trim); m != nil {
 			flushPD()
 			inLD = false
-			pd = &hpDiskInfo{Slot: strings.Trim(m[1], `"`), Raid: curRaid}
+			pd = &hpDiskInfo{Slot: strings.Trim(m[1], `"`), Raid: curRaid, LDStatus: curLDStatus}
 			continue
 		}
 		if pd == nil {
 			continue
 		}
 		switch {
+		case strings.HasPrefix(trim, "Status:"):
+			pd.Status = strings.TrimSpace(strings.TrimPrefix(trim, "Status:"))
 		case strings.HasPrefix(trim, "Port:"):
 			pd.Port = strings.TrimSpace(strings.TrimPrefix(trim, "Port:"))
 		case strings.HasPrefix(trim, "Box:"):
@@ -2759,6 +2859,7 @@ func showDisks() {
 		slot   string
 		size   string
 		dt     string
+		health string
 		serial string
 	}
 	type diskRow struct {
@@ -2766,6 +2867,7 @@ func showDisks() {
 		size     string
 		dt       string
 		slot     string
+		health   string
 		serial   string
 		children []diskChild
 	}
@@ -2782,6 +2884,7 @@ func showDisks() {
 		dt := diskType(dev)
 		_, _, serial := diskInfo(dev)
 		slot := "-"
+		health := "-"
 		var children []diskChild
 		// For sdX behind perccli, override udevadm controller info with
 		// physical disk info. RAID mode: sysfs target == DG. Passthrough:
@@ -2800,6 +2903,7 @@ func showDisks() {
 					children = nil
 					if len(disks) == 1 {
 						slot = percSlotLabel(first)
+						health = percHealth(first)
 						if first.Raid != "" {
 							slot = first.Raid + ":" + slot
 						}
@@ -2812,18 +2916,23 @@ func showDisks() {
 							slot = fmt.Sprintf("RAID(%d)", len(disks))
 						}
 						serial = "-"
+						var childHealth []string
 						for _, d := range disks {
 							cdt := ""
 							if d.Intf != "" && d.Med != "" {
 								cdt = d.Intf + "-" + d.Med
 							}
+							ch := percHealth(d)
+							childHealth = append(childHealth, ch)
 							children = append(children, diskChild{
 								slot:   percSlotLabel(d),
 								size:   d.Size,
 								dt:     cdt,
+								health: ch,
 								serial: d.Serial,
 							})
 						}
+						health = worstHealth(childHealth...)
 					}
 				}
 			}
@@ -2842,6 +2951,7 @@ func showDisks() {
 					if len(labels) > 0 {
 						slot = labels[0]
 					}
+					health = hpHealth(first)
 					if first.Raid != "" {
 						slot = first.Raid + ":" + slot
 					}
@@ -2854,6 +2964,7 @@ func showDisks() {
 						slot = fmt.Sprintf("RAID(%d)", len(disks))
 					}
 					serial = "-"
+					var childHealth []string
 					for i, d := range disks {
 						label := ""
 						if i < len(labels) {
@@ -2863,13 +2974,17 @@ func showDisks() {
 						if d.Intf != "" && d.Med != "" {
 							cdt = d.Intf + "-" + d.Med
 						}
+						ch := hpHealth(d)
+						childHealth = append(childHealth, ch)
 						children = append(children, diskChild{
 							slot:   label,
 							size:   d.Size,
 							dt:     cdt,
+							health: ch,
 							serial: d.Serial,
 						})
 					}
+					health = worstHealth(childHealth...)
 				}
 			}
 		}
@@ -2894,6 +3009,7 @@ func showDisks() {
 			size:     size,
 			dt:       dt,
 			slot:     slot,
+			health:   health,
 			serial:   serial,
 			children: children,
 		})
@@ -2909,10 +3025,11 @@ func showDisks() {
 	// One fixed layout for every console (BIOS, UEFI, 80 or 128 columns).
 	// Keep it within 80 columns; long fields are truncated.
 	const (
-		deviceW   = 12
-		slotW     = 12
-		serialW   = 33
-		lineWidth = 21 + deviceW + slotW + serialW
+		deviceW   = 10
+		slotW     = 10
+		healthW   = 6
+		serialW   = 30
+		lineWidth = 7 + deviceW + 6 + 9 + slotW + healthW + serialW
 	)
 
 	// Paginate by rendered lines so the page fills the terminal height.
@@ -2948,8 +3065,9 @@ func showDisks() {
 		right := pad - left
 		fmt.Printf("%s %s %s\n", strings.Repeat("=", left), title, strings.Repeat("=", right))
 		fmt.Println()
-		fmt.Printf("  %-*s %-6s %-9s %-*s %s\n",
-			deviceW, "DEVICE", "SIZE", "TYPE", slotW, "SLOT", "SERIAL")
+		fmt.Printf("  %-*s %-6s %-9s %-*s %-*s %s\n",
+			deviceW, "DEVICE", "SIZE", "TYPE", slotW, "SLOT",
+			healthW, "HEALTH", "SERIAL")
 		fmt.Println("  " + strings.Repeat("-", lineWidth-2))
 	}
 
@@ -2967,11 +3085,16 @@ func showDisks() {
 				if serial == "" {
 					serial = "-"
 				}
-				fmt.Printf("  %-*s %-6s %-9s %-*s %s\n",
+				health := r.health
+				if health == "" {
+					health = "-"
+				}
+				fmt.Printf("  %-*s %-6s %-9s %-*s %-*s %s\n",
 					deviceW, truncateStr(r.display, deviceW),
 					r.size,
 					truncateStr(r.dt, 9),
 					slotW, truncateStr(r.slot, slotW),
+					healthW, health,
 					truncateStr(serial, serialW))
 				// Standard tree for wide consoles; fall back to ASCII on a
 				// plain vt100/serial terminal where box drawing may not exist.
@@ -2997,6 +3120,10 @@ func showDisks() {
 					if childType == "" {
 						childType = r.dt
 					}
+					childHealth := ch.health
+					if childHealth == "" {
+						childHealth = "-"
+					}
 					childSerial := ch.serial
 					if childSerial == "" {
 						childSerial = "-"
@@ -3005,11 +3132,12 @@ func showDisks() {
 					// in SLOT so every column, especially SERIAL, aligns
 					// with the table header.
 					label := truncateStr(prefix, deviceW)
-					fmt.Printf("  %-*s %-6s %-9s %-*s %s\n",
+					fmt.Printf("  %-*s %-6s %-9s %-*s %-*s %s\n",
 						deviceW, label,
 						childSize,
 						truncateStr(childType, 9),
 						slotW, truncateStr(childSlot, slotW),
+						healthW, childHealth,
 						truncateStr(childSerial, serialW))
 				}
 			}
