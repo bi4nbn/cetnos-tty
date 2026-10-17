@@ -371,6 +371,33 @@ func TestHPBusMedia(t *testing.T) {
 	}
 }
 
+func TestSmartHealthParsing(t *testing.T) {
+	if got := parseSmartHealth("SMART overall-health self-assessment test result: PASSED"); got != "OK" {
+		t.Errorf("PASSED = %q", got)
+	}
+	if got := parseSmartHealth("SMART overall-health self-assessment test result: FAILED!"); got != "BAD" {
+		t.Errorf("FAILED = %q", got)
+	}
+	okAttr := `Critical Warning:                   0x00
+Available Spare:                    100%
+Available Spare Threshold:          10%
+Percentage Used:                    0%
+Media and Data Integrity Errors:    0`
+	if smartAttrWarn(okAttr) {
+		t.Error("healthy NVMe attrs flagged")
+	}
+	for name, out := range map[string]string{
+		"critical": "Critical Warning: 0x01",
+		"spare":    "Available Spare: 5%\nAvailable Spare Threshold: 10%",
+		"wear":     "Percentage Used: 95%",
+		"media":    "Media and Data Integrity Errors: 1",
+	} {
+		if !smartAttrWarn(out) {
+			t.Errorf("%s not flagged", name)
+		}
+	}
+}
+
 func TestHealthHelpers(t *testing.T) {
 	cases := []struct {
 		pd   percDiskInfo

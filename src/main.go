@@ -2287,6 +2287,128 @@ func hpHealth(d hpDiskInfo) string {
 	return h
 }
 
+var smartctlOnce sync.Once
+var smartctlBin string
+
+func smartctlPath() string {
+	smartctlOnce.Do(func() {
+		if p, err := exec.LookPath("smartctl"); err == nil {
+			smartctlBin = p
+			return
+		}
+		for _, p := range []string{"/usr/sbin/smartctl", "/usr/local/sbin/smartctl"} {
+			if _, err := os.Stat(p); err == nil {
+				smartctlBin = p
+				return
+			}
+		}
+	})
+	return smartctlBin
+}
+
+func runSmartctl(args ...string) string {
+	bin := smartctlPath()
+	if bin == "" {
+		return ""
+	}
+	out, _ := exec.Command(bin, args...).CombinedOutput()
+	return string(out)
+}
+
+func parseSmartHealth(out string) string {
+	low := strings.ToLower(out)
+	if strings.Contains(low, "failed") {
+		return "BAD"
+	}
+	if strings.Contains(low, "passed") {
+		return "OK"
+	}
+	return "-"
+}
+
+func smartPercent(s string) int {
+	f := strings.Fields(s)
+	if len(f) == 0 {
+		return -1
+	}
+	v := strings.TrimSuffix(f[0], "%")
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+func smartInt(s string) int {
+	f := strings.Fields(s)
+	if len(f) == 0 {
+		return -1
+	}
+	v := strings.ReplaceAll(f[0], ",", "")
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+// smartAttrWarn flags NVMe SMART conditions that are not reflected in the
+// overall PASSED/FAILED line: critical warning, spare below threshold, high
+// wear, or media integrity errors.
+func smartAttrWarn(out string) bool {
+	spare, threshold, used := -1, -1, -1
+	for _, line := range strings.Split(out, "\n") {
+		t := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(t, "Critical Warning:"):
+			v := strings.ToLower(afterEquals(strings.TrimPrefix(t, "Critical Warning:")))
+			if v != "0x00" && v != "0" && v != "" {
+				return true
+			}
+		case strings.HasPrefix(t, "Available Spare Threshold:"):
+			threshold = smartPercent(strings.TrimPrefix(t, "Available Spare Threshold:"))
+		case strings.HasPrefix(t, "Available Spare:"):
+			spare = smartPercent(strings.TrimPrefix(t, "Available Spare:"))
+		case strings.HasPrefix(t, "Percentage Used:"):
+			used = smartPercent(strings.TrimPrefix(t, "Percentage Used:"))
+		case strings.HasPrefix(t, "Media and Data Integrity Errors:"):
+			if n := smartInt(strings.TrimPrefix(t, "Media and Data Integrity Errors:")); n > 0 {
+				return true
+			}
+		}
+	}
+	if spare >= 0 && threshold >= 0 && spare < threshold {
+		return true
+	}
+	if used >= 90 {
+		return true
+	}
+	return false
+}
+
+func smartHealth(dev string) string {
+	if smartctlPath() == "" {
+		return "-"
+	}
+	target := dev
+	nvme := strings.HasPrefix(dev, "nvme")
+	if nvme {
+		m := nvmeCtrlRe.FindStringSubmatch(dev)
+		if m == nil {
+			return "-"
+		}
+		target = "/dev/" + m[1]
+	}
+	out := runSmartctl("-H", target)
+	h := parseSmartHealth(out)
+	if nvme && h == "OK" {
+		if smartAttrWarn(runSmartctl("-A", target)) {
+			return "WARN"
+		}
+	}
+	return h
+}
+
 func worstHealth(hs ...string) string {
 	rank := map[string]int{"-": 0, "OK": 1, "WARN": 2, "BAD": 3}
 	worst, wr := "-", 0
@@ -3003,6 +3125,9 @@ func showDisks() {
 			if t := sysfsTarget(dev); t >= 0 {
 				slot = fmt.Sprintf("%02d", t)
 			}
+		}
+		if health == "-" {
+			health = smartHealth(dev)
 		}
 		rows = append(rows, diskRow{
 			display:  display,
