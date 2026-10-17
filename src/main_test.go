@@ -304,3 +304,35 @@ func TestHPBusMedia(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePercDiskOutputDell(t *testing.T) {
+	out := `Drive /c0/e32/s0 :
+================
+32:0      0 Onln   1 5.457 TB SATA HDD N   N  512B ST6000NM0115-1YZ110 U  -    
+SN =             ZAD25CH0
+Model Number = ST6000NM0115-1YZ110
+
+Drive /c0/e32/s12 :
+================
+32:12    12 Onln   0 744.625 GB SATA SSD N   N  512B INTEL SSDSC2BB800G6R U  -    
+SN =             BTWA54910752800HGN
+Model Number = INTEL SSDSC2BB800G6R
+`
+	m := parsePercDiskOutput(out)
+	if got := m[1]; len(got) != 1 {
+		t.Fatalf("DG1 = %+v, want 1 drive", got)
+	} else if got[0].EID != 32 || got[0].Slot != 0 || got[0].Serial != "ZAD25CH0" || got[0].DG != 1 {
+		t.Errorf("DG1 drive = %+v", got[0])
+	}
+	if got := m[0]; len(got) != 1 {
+		t.Fatalf("DG0 = %+v, want 1 drive", got)
+	} else if got[0].Slot != 12 || got[0].Med != "SSD" || got[0].Serial != "BTWA54910752800HGN" {
+		t.Errorf("DG0 drive = %+v", got[0])
+	}
+	if got := percSlotLabel(m[1][0]); got != "32:0" {
+		t.Errorf("percSlotLabel = %q, want 32:0", got)
+	}
+	if got := percSlotLabel(m[0][0]); got != "32:12" {
+		t.Errorf("percSlotLabel = %q, want 32:12", got)
+	}
+}

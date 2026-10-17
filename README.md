@@ -24,7 +24,7 @@
 
 修改网络配置前会备份到 `/var/backups/netcfg`；如果新配置应用失败，会自动恢复并重新应用旧配置。RHEL 的 ifcfg 重写会保留 `UUID`、`HWADDR`、`MTU`、`ETHTOOL_OPTS` 等非网络地址字段。
 
-菜单 3 同时支持 LSI MegaRAID（`perccli`/`storcli`）和 **HP Smart Array**（`ssacli`/`hpssacli`/`hpacucli`）。HP 卡通常把物理盘隐藏在逻辑卷后面，菜单会通过 `ssacli ctrl all show config detail` 把逻辑卷映射回物理盘位，例如 `sda [SYS] ... SLOT 02,04,06`。磁盘页按终端高度自动分页填满屏幕：BIOS 25 行时每页 18 行数据，UEFI 48 行时每页 41 行；按 Enter 翻页、输入 `q` 退出。列宽固定 80 列五列表格（DEVICE/SIZE/TYPE/SLOT/SERIAL），超长字段用 `...` 截断。逻辑卷对应多块物理盘时，父行显示 `RAID(n)`，下面用树形列出每个物理盘位和序列号。
+菜单 3 同时支持 LSI MegaRAID / Dell PERC（`perccli`/`storcli`）和 **HP Smart Array**（`ssacli`/`hpssacli`/`hpacucli`）。Dell PERC 的物理盘位显示为 `EID:Slot`（例如 `32:0`）；HP 卡通常把物理盘隐藏在逻辑卷后面，菜单会通过 `ssacli ctrl all show config detail` 把逻辑卷映射回物理盘位，例如 `sda [SYS] ... SLOT 02,04,06`。磁盘页按终端高度自动分页填满屏幕：BIOS 25 行时每页 18 行数据，UEFI 48 行时每页 41 行；按 Enter 翻页、输入 `q` 退出。列宽固定 80 列五列表格（DEVICE/SIZE/TYPE/SLOT/SERIAL），超长字段用 `...` 截断。逻辑卷对应多块物理盘时，父行显示 `RAID(n)`，下面用树形列出每个物理盘位和序列号。
 
 ## 快速安装
 

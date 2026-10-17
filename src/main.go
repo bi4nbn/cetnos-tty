@@ -2067,6 +2067,7 @@ func diskSizeHuman(dev string) string {
 
 // percDiskInfo holds physical disk info from perccli64.
 type percDiskInfo struct {
+	EID    int
 	Slot   int
 	DID    int
 	DG     int
@@ -2119,12 +2120,19 @@ func diskPercMap() (map[int][]percDiskInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parsePercDiskOutput(out), nil
+}
+
+// parsePercDiskOutput parses "perccli64 /c0/eall/sall show all" (Dell PERC,
+// LSI MegaRAID). Dell H330 RAID0 output has one "Drive /c0/e32/sN" section per
+// physical drive; the table row carries EID:Slot, DID and DG.
+func parsePercDiskOutput(out string) map[int][]percDiskInfo {
 	res := map[int][]percDiskInfo{}
-	var curDG, curSlot, curDID int = -1, -1, -1
+	var curEID, curDG, curSlot, curDID int = -1, -1, -1, -1
 	var curSerial, curModel, curIntf, curMed string
 	flush := func() {
 		if curSlot >= 0 && curDID >= 0 {
-			info := percDiskInfo{Slot: curSlot, DID: curDID, DG: curDG, Serial: curSerial, Model: curModel, Intf: curIntf, Med: curMed}
+			info := percDiskInfo{EID: curEID, Slot: curSlot, DID: curDID, DG: curDG, Serial: curSerial, Model: curModel, Intf: curIntf, Med: curMed}
 			if curDG >= 0 {
 				res[curDG] = append(res[curDG], info)
 			}
@@ -2140,11 +2148,12 @@ func diskPercMap() (map[int][]percDiskInfo, error) {
 		trim := strings.TrimSpace(line)
 		if driveRe.MatchString(trim) {
 			flush()
-			curDG, curSlot, curDID = -1, -1, -1
+			curEID, curDG, curSlot, curDID = -1, -1, -1, -1
 			curSerial, curModel, curIntf, curMed = "", "", "", ""
 			continue
 		}
 		if m := tblRe.FindStringSubmatch(trim); m != nil {
+			curEID, _ = strconv.Atoi(m[1])
 			curSlot, _ = strconv.Atoi(m[2])
 			curDID, _ = strconv.Atoi(m[3])
 			curDG, _ = strconv.Atoi(m[4])
@@ -2162,7 +2171,14 @@ func diskPercMap() (map[int][]percDiskInfo, error) {
 		}
 	}
 	flush()
-	return res, nil
+	return res
+}
+
+func percSlotLabel(d percDiskInfo) string {
+	if d.EID >= 0 {
+		return fmt.Sprintf("%d:%d", d.EID, d.Slot)
+	}
+	return fmt.Sprintf("%02d", d.Slot)
 }
 
 // hpDiskInfo holds physical drive info from ssacli/hpssacli.
@@ -2532,7 +2548,7 @@ func showDisks() {
 					}
 					children = nil
 					if len(disks) == 1 {
-						slot = fmt.Sprintf("%02d", first.Slot)
+						slot = percSlotLabel(first)
 						if first.Serial != "" {
 							serial = first.Serial
 						}
@@ -2541,7 +2557,7 @@ func showDisks() {
 						serial = "-"
 						for _, d := range disks {
 							children = append(children, diskChild{
-								slot:   fmt.Sprintf("%02d", d.Slot),
+								slot:   percSlotLabel(d),
 								serial: d.Serial,
 							})
 						}
