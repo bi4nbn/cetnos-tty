@@ -24,7 +24,7 @@
 
 修改网络配置前会备份到 `/var/backups/netcfg`；如果新配置应用失败，会自动恢复并重新应用旧配置。RHEL 的 ifcfg 重写会保留 `UUID`、`HWADDR`、`MTU`、`ETHTOOL_OPTS` 等非网络地址字段。
 
-菜单 3 同时支持 LSI MegaRAID / Dell PERC（`perccli`/`storcli`）和 **HP Smart Array**（`ssacli`/`hpssacli`/`hpacucli`）。SLOT 列会带上 RAID 模式：单盘逻辑卷显示 `RAID0:12`，多盘阵列父行显示 `RAID5`、子行显示槽位号。Dell PERC 的槽位来自 `EID:Slot`，显示时只取 Slot；HP 逻辑卷通过 `ssacli ctrl all show config detail` 映射回物理盘位。磁盘页按终端高度自动分页填满屏幕：BIOS 25 行时每页 18 行数据，UEFI 48 行时每页 41 行；按 Enter 翻页、输入 `q` 退出。列宽固定 80 列五列表格（DEVICE/SIZE/TYPE/SLOT/SERIAL），超长字段用 `...` 截断。逻辑卷对应多块物理盘时，父行显示 `RAID(n)`，下面用树形列出每个物理盘位和序列号。
+菜单 3 同时支持 LSI MegaRAID / Dell PERC（`perccli`/`storcli`）和 **HP Smart Array**（`ssacli`/`hpssacli`/`hpacucli`）。SLOT 列会带上 RAID 模式：单盘逻辑卷显示 `RAID0:12`，多盘阵列父行显示 `RAID5`、子行显示槽位号。Dell PERC 的槽位来自 `EID:Slot`，显示时只取 Slot；HP 逻辑卷通过 `ssacli ctrl all show config detail` 映射回物理盘位。磁盘页按终端高度自动分页填满屏幕：BIOS 25 行时每页 18 行数据，UEFI 48 行时每页 41 行；按 Enter 翻页、输入 `q` 退出。列宽固定 80 列五列表格（DEVICE/SIZE/TYPE/SLOT/SERIAL），超长字段用 `...` 截断。逻辑卷对应多块物理盘时，父行显示 RAID 模式，下面用树形列出每个物理盘位和序列号。NVMe 盘优先通过 SMBIOS 显示 PCIe 插槽名（如 `Slot 2`），没有映射时回退到 PCI 地址。
 
 ## 快速安装
 

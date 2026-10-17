@@ -2465,6 +2465,69 @@ func hpSlotList(disks []hpDiskInfo) string {
 	return strings.Join(hpSlotLabels(disks), ",")
 }
 
+var pciSlots map[string]string
+var pciSlotsOnce sync.Once
+
+// pciSlotName maps a PCI BDF to the physical slot name from SMBIOS, e.g.
+// "0000:05:00.0" -> "Slot 2". dmidecode is optional; if unavailable we fall
+// back to the BDF itself in nvmeSlot.
+func pciSlotName(bdf string) string {
+	pciSlotsOnce.Do(func() {
+		pciSlots = map[string]string{}
+		out, err := run("dmidecode", "-t", "slot")
+		if err != nil {
+			return
+		}
+		designation := ""
+		for _, line := range strings.Split(out, "\n") {
+			t := strings.TrimSpace(line)
+			if strings.HasPrefix(t, "Designation:") {
+				designation = shortSlotName(strings.TrimSpace(strings.TrimPrefix(t, "Designation:")))
+				continue
+			}
+			if strings.HasPrefix(t, "Bus Address:") && designation != "" {
+				addr := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(t, "Bus Address:")))
+				pciSlots[addr] = designation
+				designation = ""
+			}
+		}
+	})
+	return pciSlots[strings.ToLower(bdf)]
+}
+
+func shortSlotName(s string) string {
+	low := strings.ToLower(s)
+	for _, prefix := range []string{"pci-e ", "pcie ", "pci "} {
+		if strings.HasPrefix(low, prefix) {
+			return strings.TrimSpace(s[len(prefix):])
+		}
+	}
+	return s
+}
+
+var nvmeCtrlRe = regexp.MustCompile(`^(nvme\d+)`)
+
+// nvmeSlot returns the physical PCIe slot for an NVMe namespace, or its PCI
+// BDF / controller name when SMBIOS has no slot mapping.
+func nvmeSlot(dev string) string {
+	m := nvmeCtrlRe.FindStringSubmatch(dev)
+	if m == nil {
+		return ""
+	}
+	ctrl := m[1]
+	bdf := readFileTrim("/sys/class/nvme/" + ctrl + "/address")
+	if bdf == "" {
+		return ctrl
+	}
+	if name := pciSlotName(bdf); name != "" {
+		return name
+	}
+	if parts := strings.SplitN(bdf, ":", 2); len(parts) == 2 && len(parts[0]) == 4 {
+		return parts[1]
+	}
+	return bdf
+}
+
 // sysfsTarget returns the SCSI target id for a block device (== VD/DG number).
 func sysfsTarget(dev string) int {
 	link, err := os.Readlink("/sys/class/block/" + dev)
@@ -2708,6 +2771,11 @@ func showDisks() {
 						})
 					}
 				}
+			}
+		}
+		if slot == "-" && strings.HasPrefix(dev, "nvme") {
+			if s := nvmeSlot(dev); s != "" {
+				slot = s
 			}
 		}
 		if slot == "-" {
